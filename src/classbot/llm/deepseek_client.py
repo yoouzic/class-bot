@@ -13,6 +13,10 @@ _SYSTEM_PROMPT = (
 )
 
 
+class DeepSeekStreamError(RuntimeError):
+    """Raised when DeepSeek returns an error or an incomplete SSE stream."""
+
+
 class DeepSeekClient:
     def __init__(
         self,
@@ -59,6 +63,7 @@ class DeepSeekClient:
             "Accept": "text/event-stream",
         }
 
+        done_received = False
         async with self._http_client.stream(
             "POST",
             "/chat/completions",
@@ -74,11 +79,26 @@ class DeepSeekClient:
                 if not data:
                     continue
                 if data == "[DONE]":
-                    return
+                    done_received = True
+                    break
 
                 event = json.loads(data)
                 if not isinstance(event, dict):
                     continue
+
+                error_payload = event.get("error")
+                if error_payload is not None:
+                    if isinstance(error_payload, dict):
+                        message = error_payload.get("message")
+                    else:
+                        message = error_payload
+                    if not isinstance(message, str) or not message:
+                        message = "DeepSeek API returned an error"
+                    safe_message = message.replace(api_key, "[REDACTED]")
+                    raise DeepSeekStreamError(
+                        f"DeepSeek API error: {safe_message}"
+                    )
+
                 choices = event.get("choices")
                 if not isinstance(choices, list) or not choices:
                     continue
@@ -93,3 +113,8 @@ class DeepSeekClient:
                 content = delta.get("content")
                 if isinstance(content, str) and content:
                     yield content
+
+        if not done_received:
+            raise DeepSeekStreamError(
+                "DeepSeek stream ended before data: [DONE]"
+            )

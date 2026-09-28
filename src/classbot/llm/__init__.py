@@ -1,3 +1,3 @@
-from .deepseek_client import DeepSeekClient
+from .deepseek_client import DeepSeekClient, DeepSeekStreamError
 
-__all__ = ["DeepSeekClient"]
+__all__ = ["DeepSeekClient", "DeepSeekStreamError"]

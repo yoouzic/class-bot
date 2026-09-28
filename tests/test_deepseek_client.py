@@ -1,10 +1,11 @@
+import asyncio
 import json
 
 import httpx
 import pytest
 
 from classbot.config import Settings
-from classbot.llm.deepseek_client import DeepSeekClient
+from classbot.llm.deepseek_client import DeepSeekClient, DeepSeekStreamError
 
 
 def _settings(api_key: str | None = "test-key") -> Settings:
@@ -101,6 +102,85 @@ async def test_missing_api_key_fails_before_transport_is_called():
     assert calls == 0
 
 
+@pytest.mark.asyncio
+async def test_stream_raises_when_response_ends_before_done():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "半截"}}]}\n',
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        with pytest.raises(DeepSeekStreamError, match=r"\[DONE\]"):
+            await _answer_chunks(client, "问题", "历史")
+
+
+@pytest.mark.asyncio
+async def test_stream_error_payload_raises_without_exposing_api_key():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"error": {"message": "upstream failed"}}\n',
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        with pytest.raises(DeepSeekStreamError, match="upstream failed") as error:
+            await _answer_chunks(client, "问题", "历史")
+
+    assert "test-key" not in str(error.value)
+
+
+class _BlockingStream(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        self.started.set()
+        await asyncio.Event().wait()
+        yield b"data: [DONE]\n\n"
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_cancelling_stream_propagates_and_closes_response_stream():
+    response_stream = _BlockingStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=response_stream,
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        task = asyncio.create_task(
+            _answer_chunks(client, "问题", "历史")
+        )
+        await response_stream.started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert response_stream.closed is True
+
+
 @pytest.mark.parametrize("status_code", [401, 500])
 @pytest.mark.asyncio
 async def test_http_errors_are_raised(status_code: int):
@@ -123,7 +203,28 @@ async def test_http_errors_are_raised(status_code: int):
 
 
 @pytest.mark.asyncio
-async def test_aclose_is_available_for_an_owned_client():
-    client = DeepSeekClient(_settings())
+async def test_injected_client_is_not_closed_by_aclose():
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content="data: [DONE]\n")
+        ),
+        base_url=settings.base_url,
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+
+        await client.aclose()
+
+        assert http_client.is_closed is False
+
+
+@pytest.mark.asyncio
+async def test_owned_client_exposes_base_url_timeout_and_can_close():
+    settings = _settings()
+    client = DeepSeekClient(settings)
+
+    assert client._http_client.base_url == httpx.URL(settings.base_url)
+    assert client._http_client.timeout.connect == 5.0
+    assert client._http_client.timeout.read == 30.0
 
     await client.aclose()
