@@ -437,3 +437,271 @@ async def test_non_cancel_recognizer_error_is_propagated_after_cleanup() -> None
         await pipeline.run()
 
     assert recognizer.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_run_calls_share_one_event_consumer() -> None:
+    class SharedRunRecognizer(FakeRecognizer):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.events_started = asyncio.Event()
+            self.release_events = asyncio.Event()
+
+        def events(self) -> AsyncIterator[TranscriptEvent]:
+            self.events_calls += 1
+            self.events_started.set()
+
+            async def stream() -> AsyncIterator[TranscriptEvent]:
+                await self.release_events.wait()
+                if False:
+                    yield event("不可达")
+
+            return stream()
+
+    recognizer = SharedRunRecognizer()
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector({}),
+        FakeClient({}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+    )
+    first_run = asyncio.create_task(pipeline.run())
+    await recognizer.events_started.wait()
+    second_run = asyncio.create_task(pipeline.run())
+    await asyncio.sleep(0)
+    observed_events_calls = recognizer.events_calls
+    recognizer.release_events.set()
+
+    await asyncio.gather(first_run, second_run)
+
+    assert observed_events_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_failure_stops_once_and_preserves_start_error() -> None:
+    class StartFailRecognizer(FakeRecognizer):
+        async def start(self) -> None:
+            self.started += 1
+            raise RuntimeError("recognizer start failed")
+
+    recognizer = StartFailRecognizer([])
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector({}),
+        FakeClient({}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+    )
+
+    with pytest.raises(RuntimeError, match="recognizer start failed") as caught:
+        await pipeline.prepare()
+
+    assert recognizer.stop_calls == 1
+    await pipeline.stop()
+    assert recognizer.stop_calls == 1
+    assert str(caught.value) == "recognizer start failed"
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_start_and_does_not_publish_prepared_after_race() -> None:
+    class SlowStartRecognizer(FakeRecognizer):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.start_entered = asyncio.Event()
+            self.release_start = asyncio.Event()
+
+        async def start(self) -> None:
+            self.started += 1
+            self.start_entered.set()
+            await self.release_start.wait()
+
+    recognizer = SlowStartRecognizer()
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector({}),
+        FakeClient({}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+    )
+    prepare_task = asyncio.create_task(pipeline.prepare())
+    await recognizer.start_entered.wait()
+    stop_task = asyncio.create_task(pipeline.stop())
+    await asyncio.sleep(0)
+    stop_was_waiting = not stop_task.done()
+    recognizer.release_start.set()
+
+    await asyncio.gather(prepare_task, stop_task)
+
+    assert stop_was_waiting
+    assert recognizer.stop_calls == 1
+    assert pipeline._prepared is False
+
+
+@pytest.mark.asyncio
+async def test_events_error_wins_over_recognizer_stop_error() -> None:
+    class ErroringRecognizer(FakeRecognizer):
+        def events(self) -> AsyncIterator[TranscriptEvent]:
+            self.events_calls += 1
+
+            async def stream() -> AsyncIterator[TranscriptEvent]:
+                raise RuntimeError("events failed")
+                yield event("不可达")
+
+            return stream()
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            raise RuntimeError("stop failed")
+
+    recognizer = ErroringRecognizer([])
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector({}),
+        FakeClient({}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+    )
+
+    with pytest.raises(RuntimeError, match="events failed") as caught:
+        await pipeline.run()
+
+    assert recognizer.stop_calls == 1
+    assert any("stop failed" in note for note in caught.value.__notes__)
+
+
+@pytest.mark.asyncio
+async def test_revision_waits_for_async_old_callback_before_new_revision_callback() -> None:
+    old_event = event("旧问题", is_final=False)
+    new_event = event("新问题？")
+    old_question = candidate("q1", old_event.text, is_final=False)
+    new_question = candidate("q1", new_event.text)
+    old_callback_started = asyncio.Event()
+    release_old_callback = asyncio.Event()
+    new_event_yielded = asyncio.Event()
+    order: list[str] = []
+
+    class RevisionRecognizer(FakeRecognizer):
+        def events(self) -> AsyncIterator[TranscriptEvent]:
+            self.events_calls += 1
+
+            async def stream() -> AsyncIterator[TranscriptEvent]:
+                yield old_event
+                await old_callback_started.wait()
+                new_event_yielded.set()
+                yield new_event
+
+            return stream()
+
+    class RevisionClient:
+        def stream_answer(self, question: str, _subject: str) -> AsyncIterator[str]:
+            if question == old_question.text:
+                return self.old_stream()
+            return self.new_stream()
+
+        async def old_stream(self) -> AsyncIterator[str]:
+            yield "旧答案"
+
+        async def new_stream(self) -> AsyncIterator[str]:
+            yield "新答案"
+
+    async def release_after_new_event() -> None:
+        await new_event_yielded.wait()
+        await asyncio.sleep(0)
+        release_old_callback.set()
+
+    async def on_card(card: AnswerCard) -> None:
+        if card.question == new_question.text:
+            order.append("new-card")
+
+    async def on_delta(_question_id: str, answer: str) -> None:
+        if answer != "旧答案":
+            return
+        order.append("old-start")
+        old_callback_started.set()
+        try:
+            await release_old_callback.wait()
+        except asyncio.CancelledError:
+            order.append("old-cancel")
+            await release_old_callback.wait()
+        order.append("old-end")
+
+    recognizer = RevisionRecognizer([])
+    detector = FakeDetector(
+        {
+            old_event.text: [old_question],
+            new_event.text: [new_question],
+        }
+    )
+    pipeline = LivePipeline(
+        recognizer,
+        detector,
+        RevisionClient(),
+        on_card,
+        on_delta,
+    )
+    release_task = asyncio.create_task(release_after_new_event())
+
+    await pipeline.run()
+    await release_task
+
+    assert order.index("old-end") < order.index("new-card")
+    assert "old-cancel" in order
+
+
+@pytest.mark.asyncio
+async def test_recent_states_are_bounded() -> None:
+    transcript_events = [event(f"问题-{index}") for index in range(130)]
+    candidates = {
+        transcript.text: [candidate(f"q-{index}", transcript.text)]
+        for index, transcript in enumerate(transcript_events)
+    }
+    recognizer = FakeRecognizer(transcript_events)
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector(candidates),
+        FakeClient({transcript.text: [] for transcript in transcript_events}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+    )
+
+    await pipeline.run()
+
+    assert len(pipeline._states) <= 128
+    assert "q-0" not in pipeline._states
+    assert "q-129" in pipeline._states
+
+
+@pytest.mark.asyncio
+async def test_callback_errors_do_not_pollute_client_error_status() -> None:
+    transcript = event("回调问题")
+    question = candidate("q1", transcript.text)
+    recognizer = FakeRecognizer([transcript])
+    detector = FakeDetector({transcript.text: [question]})
+    client = FakeClient({question.text: ["答案"]})
+    card_refs: list[AnswerCard] = []
+
+    def on_status(_status: str) -> None:
+        raise RuntimeError("status callback failed")
+
+    def on_card(card: AnswerCard) -> None:
+        card_refs.append(card)
+        if card.status is CardStatus.ANSWERED:
+            raise RuntimeError("card callback failed")
+
+    def on_delta(_question_id: str, _answer: str) -> None:
+        raise RuntimeError("delta callback failed")
+
+    pipeline = LivePipeline(
+        recognizer,
+        detector,
+        client,
+        on_card,
+        on_delta,
+        on_status,
+    )
+
+    await pipeline.run()
+
+    assert card_refs[-1].status is CardStatus.ANSWERED
+    assert card_refs[-1].error is None
