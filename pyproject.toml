@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "classbot"
+version = "0.1.0"
+description = "Classbot classroom assistant"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "PySide6",
+    "qasync",
+    "httpx",
+    "numpy",
+    "python-dotenv",
+    "sounddevice",
+    "webrtcvad-wheels",
+]
+
+[project.optional-dependencies]
+asr = [
+    "funasr",
+    "torch",
+    "torchaudio",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[project.scripts]
+classbot = "classbot.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
