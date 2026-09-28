@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import webrtcvad
 
+SAMPLE_RATE = 16_000
+
 
 @dataclass(frozen=True, slots=True)
 class SegmentEvent:
@@ -13,9 +15,11 @@ class SegmentEvent:
 
 
 class SpeechSegmenter:
-    def __init__(self, sample_rate: int = 16000, end_silence_ms: int = 320):
-        if sample_rate <= 0:
-            raise ValueError("sample_rate must be positive")
+    def __init__(
+        self, sample_rate: int = SAMPLE_RATE, end_silence_ms: int = 320
+    ):
+        if sample_rate != SAMPLE_RATE:
+            raise ValueError("sample_rate must be 16000")
         if end_silence_ms <= 0:
             raise ValueError("end_silence_ms must be positive")
 

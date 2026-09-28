@@ -11,6 +11,7 @@ from classbot.domain import TranscriptEvent
 _AUDIO_QUEUE_SIZE = 32
 _INPUT_QUEUE_SIZE = _AUDIO_QUEUE_SIZE + 1
 _FINISH = object()
+SAMPLE_RATE = 16_000
 
 
 class _EventsEnd:
@@ -328,7 +329,7 @@ class FunAsrStreamingRecognizer:
             task.exception()
 
     def _emit_event(self, text: str, is_final: bool) -> None:
-        elapsed_ms = int(self._segment_samples * 1000 / 16000)
+        elapsed_ms = int(self._segment_samples * 1000 / SAMPLE_RATE)
         self._events_queue.put_nowait(
             TranscriptEvent(
                 text=text,

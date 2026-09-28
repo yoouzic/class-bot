@@ -66,11 +66,14 @@ async def test_frames_bind_to_session_queue_across_restart(monkeypatch):
 
     capture.start()
     old_frames = capture.frames()
+    old_callback = FakeStream.instance.kwargs["callback"]
     capture.stop()
 
     capture.start()
     new_frames = capture.frames()
-    FakeStream.instance.kwargs["callback"](b"new-session", 320, None, None)
+    new_callback = FakeStream.instance.kwargs["callback"]
+    old_callback(b"old-session", 320, None, None)
+    new_callback(b"new-session", 320, None, None)
 
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(old_frames.__anext__(), timeout=1)
@@ -87,9 +90,15 @@ async def test_capture_queue_drops_oldest_frame_when_full(monkeypatch):
     )
     capture = AudioCapture()
     capture.start()
+    callback = FakeStream.instance.kwargs["callback"]
 
     for value in range(51):
-        capture._enqueue_frame(bytes([value]))
+        callback(bytes([value]), 320, None, None)
 
     assert await asyncio.wait_for(capture.frames().__anext__(), timeout=1) == b"\x01"
     capture.stop()
+
+
+def test_audio_capture_rejects_non_16khz_sample_rate():
+    with pytest.raises(ValueError, match="16000"):
+        AudioCapture(sample_rate=44100)

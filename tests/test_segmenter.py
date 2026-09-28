@@ -66,6 +66,11 @@ def test_rejects_non_20ms_pcm_frames():
         segmenter.accept(b"\x00" * 639)
 
 
+def test_rejects_non_16khz_sample_rate():
+    with pytest.raises(ValueError, match="16000"):
+        SpeechSegmenter(sample_rate=44100)
+
+
 def test_reset_clears_speech_state(monkeypatch):
     segmenter = SpeechSegmenter(end_silence_ms=40)
     monkeypatch.setattr(
