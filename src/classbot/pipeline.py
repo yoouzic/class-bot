@@ -342,6 +342,7 @@ class LivePipeline:
                 state.card.status = CardStatus.ERROR
                 state.card.error = self._readable_error(error)
                 await self._call(self._on_card, state.card, "on_card")
+                await self._call(self._on_status, "api_error", "on_status")
 
     async def _cancel_task(
         self,

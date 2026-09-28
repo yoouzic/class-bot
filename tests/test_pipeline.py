@@ -346,9 +346,15 @@ async def test_client_error_marks_only_one_card_and_pipeline_continues() -> None
         "q1": [],
         "q2": [],
     }
+    statuses: list[str] = []
 
     def on_card(card: AnswerCard) -> None:
         card_updates[card.question_id].append(card_snapshot(card))
+
+    def on_status(status: str) -> None:
+        statuses.append(status)
+        if status == "api_error":
+            raise RuntimeError("status callback must not escape")
 
     pipeline = LivePipeline(
         recognizer,
@@ -356,6 +362,7 @@ async def test_client_error_marks_only_one_card_and_pipeline_continues() -> None
         client,
         on_card,
         lambda _question_id, _answer: None,
+        on_status,
     )
 
     await pipeline.run()
@@ -363,6 +370,7 @@ async def test_client_error_marks_only_one_card_and_pipeline_continues() -> None
     assert card_updates["q1"][-1][3] is CardStatus.ERROR
     assert card_updates["q1"][-1][4] == "服务暂时不可用"
     assert card_updates["q2"][-1][2:] == ("正常答案", CardStatus.ANSWERED, None)
+    assert statuses.count("api_error") == 1
 
 
 @pytest.mark.asyncio

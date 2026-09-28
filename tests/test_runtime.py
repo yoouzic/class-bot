@@ -1,11 +1,16 @@
 import asyncio
+import os
 from collections.abc import Callable
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
+from PySide6.QtWidgets import QApplication
 
 import classbot.main as main_module
 from classbot.audio.segmenter import SegmentEvent
 from classbot.config import Settings
+from classbot.ui.main_window import MainWindow
 
 
 class FakeSignal:
@@ -136,6 +141,7 @@ class FakePipeline:
         *,
         prepare_error=None,
         run_returns=False,
+        run_error=None,
         prepare_started=None,
         release_prepare=None,
         stop_started=None,
@@ -144,6 +150,7 @@ class FakePipeline:
         self.order = order
         self.prepare_error = prepare_error
         self.run_returns = run_returns
+        self.run_error = run_error
         self.prepare_started = prepare_started
         self.release_prepare = release_prepare
         self.stop_started = stop_started
@@ -167,6 +174,8 @@ class FakePipeline:
 
     async def run(self):
         self.run_calls += 1
+        if self.run_error is not None:
+            raise self.run_error
         if self.run_returns:
             return
         await self._stop_event.wait()
@@ -186,6 +195,7 @@ class RuntimeFactory:
         prepare_error=None,
         capture_start_error=None,
         run_returns=False,
+        run_error=None,
         segment_events=None,
         block_prepare=False,
         block_stop=False,
@@ -193,6 +203,7 @@ class RuntimeFactory:
         self.prepare_error = prepare_error
         self.capture_start_error = capture_start_error
         self.run_returns = run_returns
+        self.run_error = run_error
         self.segment_events = segment_events
         self.prepare_started = asyncio.Event() if block_prepare else None
         self.release_prepare = asyncio.Event() if block_prepare else None
@@ -253,6 +264,7 @@ class RuntimeFactory:
             session["order"],
             prepare_error=self.prepare_error,
             run_returns=self.run_returns,
+            run_error=self.run_error,
             prepare_started=self.prepare_started,
             release_prepare=self.release_prepare,
             stop_started=self.stop_started,
@@ -357,6 +369,49 @@ async def test_concurrent_start_waits_for_prepare_and_shares_complete_runtime():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_start_waiter_does_not_leave_start_task_reference():
+    factory = RuntimeFactory(block_prepare=True)
+    controller = make_controller(factory)
+
+    start_waiter = asyncio.create_task(controller.start())
+    await factory.prepare_started.wait()
+    owner_task = controller._start_task
+    assert owner_task is not None
+
+    start_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await start_waiter
+
+    factory.release_prepare.set()
+    await owner_task
+
+    assert controller._start_task is None
+    await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_waiter_does_not_leave_stop_task_reference():
+    factory = RuntimeFactory(block_stop=True)
+    controller = make_controller(factory)
+
+    await controller.start()
+    stop_waiter = asyncio.create_task(controller.stop())
+    await factory.stop_started.wait()
+    owner_task = controller._stop_task
+    assert owner_task is not None
+
+    stop_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stop_waiter
+
+    factory.release_stop.set()
+    await owner_task
+
+    assert controller._stop_task is None
+    assert controller.current_runtime is None
+
+
+@pytest.mark.asyncio
 async def test_start_waits_for_in_progress_stop_before_building_new_runtime():
     factory = RuntimeFactory(block_stop=True)
     controller = make_controller(factory)
@@ -392,7 +447,7 @@ async def test_stop_cleans_runtime_and_clears_current_reference():
     session = factory.sessions[0]
     await controller.stop()
 
-    assert session["capture"].stop_calls >= 1
+    assert session["capture"].stop_calls == 1
     assert session["pipeline"].stop_calls == 1
     assert session["client"].close_calls == 1
     assert controller.current_runtime is None
@@ -471,6 +526,90 @@ async def test_audio_loop_begins_segment_pushes_audio_and_finishes_segment():
     await controller.stop()
     assert runtime.audio_task is not None
     assert runtime.audio_task.done()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_run_error_cleans_runtime_and_reports_asr_error():
+    factory = RuntimeFactory(run_error=RuntimeError("pipeline failed"))
+    window = FakeWindow()
+    controller = make_controller(factory, window)
+
+    runtime = await controller.start()
+    await wait_until(
+        lambda: controller.current_runtime is None
+        and runtime.pipeline_task is not None
+        and runtime.pipeline_task.done()
+    )
+
+    session = factory.sessions[0]
+    assert session["capture"].stop_calls == 1
+    assert session["pipeline"].stop_calls == 1
+    assert session["client"].close_calls == 1
+    assert "asr_error" in window.statuses
+    assert runtime.audio_task is not None and runtime.audio_task.done()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_prepare_and_leaves_no_runtime_or_tasks():
+    factory = RuntimeFactory(block_prepare=True)
+    quit_calls = []
+    controller = make_controller(
+        factory,
+        quit_callback=lambda: quit_calls.append(True),
+    )
+
+    start_waiter = asyncio.create_task(controller.start())
+    await factory.prepare_started.wait()
+    shutdown_waiter = asyncio.create_task(controller.shutdown())
+    await asyncio.sleep(0)
+    assert not shutdown_waiter.done()
+
+    factory.release_prepare.set()
+    runtime, _ = await asyncio.gather(start_waiter, shutdown_waiter)
+
+    assert controller.current_runtime is None
+    assert controller._start_task is None
+    assert controller._stop_task is None
+    assert runtime.audio_task is not None and runtime.audio_task.done()
+    assert runtime.pipeline_task is not None and runtime.pipeline_task.done()
+    assert quit_calls == [True]
+
+
+@pytest.fixture
+def offscreen_window():
+    application = QApplication.instance()
+    created_application = application is None
+    if created_application:
+        application = QApplication([])
+    application.setQuitOnLastWindowClosed(False)
+    window = MainWindow("历史")
+    window.show()
+    yield window
+    window.close()
+    if created_application:
+        application.quit()
+
+
+@pytest.mark.asyncio
+async def test_offscreen_close_signal_quits_once_after_runtime_cleanup(
+    offscreen_window,
+):
+    factory = RuntimeFactory()
+    quit_calls = []
+    controller = make_controller(
+        factory,
+        offscreen_window,
+        quit_callback=lambda: quit_calls.append(True),
+    )
+    controller.connect_window_signals()
+
+    await controller.start()
+    offscreen_window.close()
+    await wait_until(lambda: quit_calls == [True])
+    await controller.shutdown()
+
+    assert quit_calls == [True]
+    assert controller.current_runtime is None
 
 
 @pytest.mark.asyncio

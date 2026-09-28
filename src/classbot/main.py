@@ -160,6 +160,7 @@ class RuntimeController:
     async def _start_owner(self) -> Runtime:
         parts: dict[str, Any] = {}
         runtime: Runtime | None = None
+        owner_task = asyncio.current_task()
         try:
             parts["capture"] = await self._make(
                 self.dependencies.capture_factory
@@ -225,6 +226,10 @@ class RuntimeController:
                     self._cleanup_partial(parts, status="asr_error")
                 )
             raise
+        finally:
+            async with self._lifecycle_lock:
+                if self._start_task is owner_task:
+                    self._start_task = None
 
     async def stop(self) -> None:
         """Stop the active runtime and release every owned resource."""
@@ -246,19 +251,25 @@ class RuntimeController:
                         self._stop_task = None
 
     async def _stop_owner(self) -> None:
-        start_task = self._start_task
-        if start_task is not None and start_task is not asyncio.current_task():
-            try:
-                await asyncio.shield(start_task)
-            except Exception as error:
-                _LOGGER.debug("start failed while stopping", exc_info=error)
+        owner_task = asyncio.current_task()
+        try:
+            start_task = self._start_task
+            if start_task is not None and start_task is not owner_task:
+                try:
+                    await asyncio.shield(start_task)
+                except Exception as error:
+                    _LOGGER.debug("start failed while stopping", exc_info=error)
 
-        runtime = self._current_runtime
-        if runtime is None:
-            await self._set_status("stopped")
-            return
+            runtime = self._current_runtime
+            if runtime is None:
+                await self._set_status("stopped")
+                return
 
-        await self._cleanup_runtime(runtime, status="stopped")
+            await self._cleanup_runtime(runtime, status="stopped")
+        finally:
+            async with self._lifecycle_lock:
+                if self._stop_task is owner_task:
+                    self._stop_task = None
 
     async def shutdown(self) -> None:
         """Wait for lifecycle work, clean the runtime, and quit Qt once."""
@@ -347,8 +358,6 @@ class RuntimeController:
                 await asyncio.shield(
                     self._cleanup_runtime(runtime, status="asr_error")
                 )
-        finally:
-            await self._safe_call(runtime.capture, "stop")
 
     async def _pipeline_loop(self, runtime: Runtime) -> None:
         error: BaseException | None = None
@@ -501,6 +510,7 @@ def main() -> None:
     application = QApplication.instance()
     if application is None:
         application = QApplication(sys.argv)
+    application.setQuitOnLastWindowClosed(False)
 
     import qasync
 
