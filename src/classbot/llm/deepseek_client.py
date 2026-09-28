@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
 
 import httpx
 
@@ -11,6 +15,8 @@ _SYSTEM_PROMPT = (
     "你是一个课堂问答助手。只输出直接、准确、简短的中文答案（1～3句），"
     "不输出推理、寒暄、标题或代码块；不确定时明确说不确定。"
 )
+_DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 1.0
+_MAX_RATE_LIMIT_COOLDOWN_SECONDS = 30.0
 
 
 class DeepSeekStreamError(RuntimeError):
@@ -37,6 +43,7 @@ class DeepSeekClient:
         else:
             self._http_client = http_client
             self._owns_http_client = False
+        self._rate_limit_until = 0.0
 
     async def aclose(self) -> None:
         if self._owns_http_client:
@@ -48,6 +55,12 @@ class DeepSeekClient:
         api_key = self._settings.deepseek_api_key
         if api_key is None or not api_key.strip():
             raise ValueError("DEEPSEEK_API_KEY is required")
+        remaining_cooldown = self._rate_limit_until - time.monotonic()
+        if remaining_cooldown > 0:
+            raise DeepSeekStreamError(
+                "DeepSeek API rate limit is active; "
+                f"retry in {remaining_cooldown:.1f}s"
+            )
 
         payload = {
             "model": self._settings.model,
@@ -77,6 +90,16 @@ class DeepSeekClient:
                     headers=headers,
                     json=payload,
                 ) as response:
+                    if response.status_code == 429:
+                        cooldown = self._rate_limit_cooldown(response)
+                        self._rate_limit_until = max(
+                            self._rate_limit_until,
+                            time.monotonic() + cooldown,
+                        )
+                        raise DeepSeekStreamError(
+                            "DeepSeek API rate limit exceeded; "
+                            f"retry in {cooldown:.1f}s"
+                        )
                     response.raise_for_status()
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -136,3 +159,27 @@ class DeepSeekClient:
                 if attempt == 0 and error.retryable and not yielded_content:
                     continue
                 raise
+
+    @staticmethod
+    def _rate_limit_cooldown(response: httpx.Response) -> float:
+        value = response.headers.get("retry-after")
+        seconds: float | None = None
+        if value:
+            try:
+                parsed_seconds = float(value)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(value)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=UTC)
+                    seconds = (
+                        retry_at - datetime.now(UTC)
+                    ).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    seconds = None
+            else:
+                seconds = parsed_seconds
+
+        if seconds is None or not isfinite(seconds) or seconds <= 0:
+            return _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+        return min(seconds, _MAX_RATE_LIMIT_COOLDOWN_SECONDS)

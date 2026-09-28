@@ -204,6 +204,65 @@ async def test_incomplete_stream_after_content_is_not_retried_or_duplicated():
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_uses_retry_after_and_skips_followup_request():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "2"},
+            content=b"rate limited",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        with pytest.raises(
+            DeepSeekStreamError,
+            match=r"rate limit.*retry in 2\.0s",
+        ):
+            await _answer_chunks(client, "问题", "历史")
+        with pytest.raises(DeepSeekStreamError, match="rate limit"):
+            await _answer_chunks(client, "另一个问题", "历史")
+
+    assert calls == 1
+
+
+@pytest.mark.parametrize("retry_after", [None, "not-a-duration"])
+@pytest.mark.asyncio
+async def test_rate_limit_uses_short_default_for_invalid_or_missing_retry_after(
+    retry_after,
+):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        headers = {} if retry_after is None else {"Retry-After": retry_after}
+        return httpx.Response(429, headers=headers, content=b"rate limited")
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        with pytest.raises(
+            DeepSeekStreamError,
+            match=r"rate limit.*retry in",
+        ) as error:
+            await _answer_chunks(client, "问题", "历史")
+        with pytest.raises(DeepSeekStreamError, match="rate limit"):
+            await _answer_chunks(client, "另一个问题", "历史")
+
+    assert "test-key" not in str(error.value)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_error_payload_raises_without_exposing_api_key():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -271,7 +330,11 @@ async def test_cancelling_stream_propagates_and_closes_response_stream():
 @pytest.mark.parametrize("status_code", [401, 500])
 @pytest.mark.asyncio
 async def test_http_errors_are_raised(status_code: int):
+    calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(
             status_code,
             headers={"content-type": "text/event-stream"},
@@ -287,6 +350,7 @@ async def test_http_errors_are_raised(status_code: int):
             await _answer_chunks(client, "问题", "历史")
 
     assert error.value.response.status_code == status_code
+    assert calls == 1
 
 
 @pytest.mark.asyncio

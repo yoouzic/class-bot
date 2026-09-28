@@ -136,6 +136,23 @@ def test_qingwen_question_triggers_candidate():
     assert candidates[0].text == "请问马克思的生辰"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "马克思为什么出生在德国",
+        "马克思如何影响历史",
+        "马克思是哪一年出生的",
+    ],
+)
+def test_spoken_question_marker_inside_sentence_triggers_candidate(text):
+    detector = QuestionDetector(subject="历史")
+
+    candidates = detector.feed(TranscriptEvent(text=text, is_final=False))
+
+    assert len(candidates) == 1
+    assert candidates[0].text == normalize_text(text)
+
+
 def test_growing_partial_transcript_with_same_segment_id_reuses_question_id():
     detector = QuestionDetector(subject="历史")
     first = _one(

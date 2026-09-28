@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 
 from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
@@ -106,6 +107,9 @@ class RuntimeController:
         self._shutdown_requested = False
         self._shutdown_complete = False
         self._signals_connected = False
+        self._application_signals_connected = False
+        self._application_quitting = False
+        self._application: Any | None = None
         self._signal_tasks: set[asyncio.Task[Any]] = set()
 
     @property
@@ -324,9 +328,9 @@ class RuntimeController:
                     )
             await self.stop()
         finally:
-            await self._quit()
             async with self._lifecycle_lock:
                 self._shutdown_complete = True
+            await self._quit()
 
     def connect_window_signals(self) -> None:
         """Connect Qt signals to tasks without starting work at import time."""
@@ -337,7 +341,49 @@ class RuntimeController:
         self.window.close_requested.connect(self._schedule_shutdown)
         self._signals_connected = True
 
-    connect_signals = connect_window_signals
+    def connect_application_signals(self, application: Any | None = None) -> None:
+        """Schedule runtime cleanup when Qt begins shutting down externally."""
+        if self._application_signals_connected:
+            return
+        if application is None:
+            application = QApplication.instance()
+        if application is None:
+            return
+        about_to_quit = getattr(application, "aboutToQuit", None)
+        if about_to_quit is None:
+            return
+        about_to_quit.connect(self._handle_about_to_quit)
+        self._application = application
+        self._application_signals_connected = True
+
+    def connect_signals(self, application: Any | None = None) -> None:
+        self.connect_window_signals()
+        self.connect_application_signals(application)
+
+    def _handle_about_to_quit(self) -> None:
+        self._application_quitting = True
+        if not self._shutdown_complete:
+            task = self._schedule(self.shutdown())
+            self._drain_shutdown_task(task)
+
+    def _drain_shutdown_task(self, task: asyncio.Task[Any]) -> None:
+        application = self._application
+        process_events = getattr(application, "processEvents", None)
+        if process_events is None:
+            return
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if (
+            task.get_loop() is not running_loop
+            or type(running_loop).__module__ != "qasync"
+        ):
+            return
+        # qasync exits Qt immediately after aboutToQuit; let its queued task
+        # steps finish while Qt still owns the event loop.
+        while not task.done():
+            process_events(QEventLoop.ProcessEventsFlag.AllEvents, 10)
 
     def _schedule_start(self) -> None:
         self._schedule(self.start())
@@ -348,10 +394,11 @@ class RuntimeController:
     def _schedule_shutdown(self) -> None:
         self._schedule(self.shutdown())
 
-    def _schedule(self, awaitable: Awaitable[Any]) -> None:
+    def _schedule(self, awaitable: Awaitable[Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(awaitable)
         self._signal_tasks.add(task)
         task.add_done_callback(self._forget_signal_task)
+        return task
 
     def _forget_signal_task(self, task: asyncio.Task[Any]) -> None:
         self._signal_tasks.discard(task)
@@ -520,10 +567,15 @@ class RuntimeController:
         await self._safe_awaitable(self.window.set_status(status))
 
     async def _quit(self) -> None:
+        if self._application_quitting:
+            return
+        self._application_quitting = True
         if self.quit_callback is not None:
             await self._safe_awaitable(self.quit_callback())
             return
-        application = QApplication.instance()
+        application = self._application
+        if application is None:
+            application = QApplication.instance()
         if application is not None:
             application.quit()
 
@@ -580,7 +632,7 @@ def main() -> None:
     asyncio.set_event_loop(loop)
     window = MainWindow(settings.subject)
     controller = RuntimeController(settings, window)
-    controller.connect_window_signals()
+    controller.connect_signals(application)
     window.show()
 
     with loop:

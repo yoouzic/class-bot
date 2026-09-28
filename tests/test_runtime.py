@@ -6,6 +6,8 @@ from collections.abc import Callable
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+import qasync
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 import classbot.main as main_module
@@ -28,6 +30,16 @@ class FakeSignal:
     def emit(self):
         for callback in tuple(self.callbacks):
             callback()
+
+
+class FakeApplication:
+    def __init__(self):
+        self.aboutToQuit = FakeSignal()
+        self.quit_calls = 0
+
+    def quit(self):
+        self.quit_calls += 1
+        self.aboutToQuit.emit()
 
 
 class FakeWindow:
@@ -828,6 +840,54 @@ async def test_shutdown_quits_once_and_repeated_shutdown_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_external_application_quit_cleans_runtime_before_shutdown_returns():
+    factory = RuntimeFactory()
+    application = FakeApplication()
+    controller = make_controller(factory)
+    controller.connect_application_signals(application)
+
+    await controller.start()
+    application.quit()
+    await wait_until(lambda: controller.current_runtime is None)
+
+    assert factory.sessions[0]["capture"].stop_calls == 1
+    assert factory.sessions[0]["pipeline"].stop_calls == 1
+    assert factory.sessions[0]["client"].close_calls == 1
+    assert application.quit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_internal_shutdown_does_not_recurse_from_about_to_quit():
+    factory = RuntimeFactory()
+    application = FakeApplication()
+    cleanup_observations = []
+
+    def quit_application():
+        cleanup_observations.append(
+            (
+                factory.sessions[0]["capture"].stop_calls,
+                factory.sessions[0]["pipeline"].stop_calls,
+                factory.sessions[0]["client"].close_calls,
+            )
+        )
+        application.quit()
+
+    controller = make_controller(
+        factory,
+        quit_callback=quit_application,
+    )
+    controller.connect_application_signals(application)
+
+    await controller.start()
+    await controller.shutdown()
+    await wait_until(lambda: not controller._signal_tasks)
+
+    assert cleanup_observations == [(1, 1, 1)]
+    assert application.quit_calls == 1
+    assert factory.sessions[0]["client"].close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_close_signal_is_connected_and_closes_runtime_client():
     factory = RuntimeFactory()
     window = FakeWindow()
@@ -844,5 +904,31 @@ async def test_close_signal_is_connected_and_closes_runtime_client():
     await wait_until(lambda: quit_calls == [True])
     await controller.shutdown()
 
+    assert factory.sessions[0]["client"].close_calls == 1
+    assert controller.current_runtime is None
+
+
+def test_offscreen_external_application_quit_cleans_runtime(offscreen_window):
+    application = QApplication.instance()
+    assert application is not None
+    factory = RuntimeFactory()
+    controller = make_controller(factory, offscreen_window)
+    controller.connect_signals(application)
+
+    async def start_then_quit():
+        await controller.start()
+        QTimer.singleShot(0, application.quit)
+
+    loop = qasync.QEventLoop(application)
+    asyncio.set_event_loop(loop)
+    loop.create_task(start_then_quit())
+    try:
+        with loop:
+            loop.run_forever()
+    finally:
+        asyncio.set_event_loop(None)
+
+    assert factory.sessions[0]["capture"].stop_calls == 1
+    assert factory.sessions[0]["pipeline"].stop_calls == 1
     assert factory.sessions[0]["client"].close_calls == 1
     assert controller.current_runtime is None

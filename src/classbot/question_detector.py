@@ -22,6 +22,22 @@ STRONG_QUESTION_MARKERS = (
 )
 QUESTION_PARTICLES = ("吗", "呢")
 QUESTION_MARKS = ("?", "？")
+NARRATIVE_PREFIX_ENDINGS = (
+    "解释",
+    "说明",
+    "讲解",
+    "讲述",
+    "介绍",
+    "讨论",
+    "分析",
+    "回答",
+    "告诉",
+    "提到",
+    "证明",
+    "问",
+    "说",
+)
+NARRATIVE_ASPECT_SUFFIXES = ("", "了", "过", "着")
 QUESTION_CLOSERS = frozenset(
     " \t\r\n\"'”’)]}>》」』）】〕〉〗〙〛｝»"
 )
@@ -136,9 +152,15 @@ class QuestionDetector:
 
     @classmethod
     def _score(cls, event: TranscriptEvent, normalized_text: str) -> float:
-        has_strong_marker = cls._has_strong_marker_at_boundary(normalized_text)
+        has_strong_marker = cls._has_strong_marker(normalized_text)
         has_ending_particle = normalized_text.endswith(QUESTION_PARTICLES)
         has_question_mark = cls._has_question_mark(event.text)
+        if (
+            has_strong_marker
+            and not has_question_mark
+            and any(mark in event.text for mark in QUESTION_MARKS)
+        ):
+            has_strong_marker = False
 
         score = 0.0
         if has_strong_marker:
@@ -154,11 +176,31 @@ class QuestionDetector:
         return min(score, 1.0)
 
     @staticmethod
-    def _has_strong_marker_at_boundary(normalized_text: str) -> bool:
-        return any(
+    def _has_strong_marker(normalized_text: str) -> bool:
+        if any(
             normalized_text.startswith(marker) or normalized_text.endswith(marker)
             for marker in STRONG_QUESTION_MARKERS
-        )
+        ):
+            return True
+
+        for marker in sorted(
+            STRONG_QUESTION_MARKERS,
+            key=len,
+            reverse=True,
+        ):
+            marker_start = normalized_text.find(marker)
+            if marker_start <= 0:
+                continue
+            marker_end = marker_start + len(marker)
+            if marker_end >= len(normalized_text):
+                continue
+            prefix = normalized_text[:marker_start]
+            return not any(
+                prefix.endswith(ending + aspect)
+                for ending in NARRATIVE_PREFIX_ENDINGS
+                for aspect in NARRATIVE_ASPECT_SUFFIXES
+            )
+        return False
 
     @staticmethod
     def _has_question_mark(raw_text: str) -> bool:
