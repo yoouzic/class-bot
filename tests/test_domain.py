@@ -12,6 +12,7 @@ def test_domain_types_construct_valid_values():
         confidence=0.9,
         pause_ms=50,
     )
+    assert event.segment_id is None
     candidate = QuestionCandidate(
         question_id="q1",
         text=event.text,
@@ -26,6 +27,12 @@ def test_domain_types_construct_valid_values():
     )
 
     assert card.status is CardStatus.DETECTED
+
+
+def test_transcript_event_accepts_explicit_segment_id():
+    event = TranscriptEvent(text="片段", is_final=False, segment_id="asr-1")
+
+    assert event.segment_id == "asr-1"
 
 
 @pytest.mark.parametrize(

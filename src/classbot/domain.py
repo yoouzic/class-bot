@@ -18,6 +18,7 @@ class TranscriptEvent:
     end_ms: int = 0
     confidence: float = 0.0
     pause_ms: int = 0
+    segment_id: int | str | None = None
 
     def __post_init__(self) -> None:
         if self.start_ms > self.end_ms:

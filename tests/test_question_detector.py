@@ -1,3 +1,5 @@
+import pytest
+
 from classbot.domain import QuestionCandidate, TranscriptEvent
 from classbot.question_detector import QuestionDetector, normalize_text
 
@@ -51,25 +53,27 @@ def test_partial_question_triggers_before_final_transcript():
     assert 0 <= candidate.confidence <= 1
 
 
-def test_growing_partial_transcript_reuses_question_id():
+def test_growing_partial_transcript_with_same_segment_id_reuses_question_id():
     detector = QuestionDetector(subject="历史")
     first = _one(
         detector.feed(
             TranscriptEvent(
-                text="马克思的生辰是",
+                text="马克思的生辰是什么",
                 is_final=False,
                 start_ms=100,
-                end_ms=100,
+                end_ms=120,
+                segment_id="segment-1",
             )
         )
     )
     second = _one(
         detector.feed(
             TranscriptEvent(
-                text="马克思的生辰是什么",
+                text="马克思的生辰是什么呢",
                 is_final=False,
-                start_ms=100,
-                end_ms=100,
+                start_ms=200,
+                end_ms=220,
+                segment_id="segment-1",
             )
         )
     )
@@ -78,8 +82,9 @@ def test_growing_partial_transcript_reuses_question_id():
             TranscriptEvent(
                 text="马克思的生辰是什么？",
                 is_final=True,
-                start_ms=100,
-                end_ms=100,
+                start_ms=300,
+                end_ms=320,
+                segment_id="segment-1",
             )
         )
     )
@@ -113,10 +118,11 @@ def test_any_final_event_closes_active_question_lifecycle():
     partial = _one(
         detector.feed(
             TranscriptEvent(
-                text="马克思的生辰是",
+                text="马克思的生辰是什么",
                 is_final=False,
                 start_ms=100,
-                end_ms=100,
+                end_ms=120,
+                segment_id="segment-1",
             )
         )
     )
@@ -124,10 +130,11 @@ def test_any_final_event_closes_active_question_lifecycle():
     assert (
         detector.feed(
             TranscriptEvent(
-                text="马克思的生辰是",
+                text="这件事的结论是",
                 is_final=True,
-                start_ms=100,
-                end_ms=100,
+                start_ms=200,
+                end_ms=220,
+                segment_id="segment-1",
             )
         )
         == []
@@ -138,8 +145,9 @@ def test_any_final_event_closes_active_question_lifecycle():
             TranscriptEvent(
                 text="马克思的生辰是什么",
                 is_final=False,
-                start_ms=100,
-                end_ms=100,
+                start_ms=300,
+                end_ms=320,
+                segment_id="segment-1",
             )
         )
     )
@@ -157,25 +165,56 @@ def test_identical_final_event_is_emitted_only_once():
     assert second == []
 
 
-def test_same_question_text_in_a_new_speech_segment_gets_a_new_id():
+def test_late_question_mark_final_revision_is_not_deduplicated():
     detector = QuestionDetector(subject="历史")
-    first = _one(
+    _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么",
+                is_final=True,
+                start_ms=100,
+                end_ms=120,
+                segment_id="segment-1",
+            )
+        )
+    )
+    revised = _one(
         detector.feed(
             TranscriptEvent(
                 text="马克思的生辰是什么？",
                 is_final=True,
                 start_ms=100,
-                end_ms=140,
+                end_ms=120,
+                segment_id="segment-1",
+            )
+        )
+    )
+
+    assert revised.text == normalize_text("马克思的生辰是什么？")
+    assert revised.is_final is True
+
+
+def test_segment_id_change_creates_new_id_even_when_times_reset():
+    detector = QuestionDetector(subject="历史")
+    first = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么",
+                is_final=False,
+                start_ms=0,
+                end_ms=0,
+                segment_id="segment-1",
             )
         )
     )
     second = _one(
         detector.feed(
             TranscriptEvent(
-                text="马克思的生辰是什么？",
-                is_final=True,
-                start_ms=200,
-                end_ms=240,
+                text="马克思的生辰是什么",
+                is_final=False,
+                start_ms=0,
+                end_ms=0,
+                segment_id="segment-2",
             )
         )
     )
@@ -183,11 +222,20 @@ def test_same_question_text_in_a_new_speech_segment_gets_a_new_id():
     assert second.question_id != first.question_id
 
 
-def test_nirong_statement_does_not_trigger_on_nonfinal_particle_substring():
+@pytest.mark.parametrize(
+    "text",
+    [
+        "这件事的结论是",
+        "老师解释了为什么失败",
+        "吗啡是一种药物",
+        "呢绒是一种纺织材料",
+    ],
+)
+def test_nonquestion_substrings_do_not_trigger(text):
     detector = QuestionDetector(subject="语文")
 
     candidates = detector.feed(
-        TranscriptEvent(text="呢绒是一种纺织材料", is_final=True)
+        TranscriptEvent(text=text, is_final=False)
     )
 
     assert candidates == []
