@@ -121,6 +121,89 @@ async def test_stream_raises_when_response_ends_before_done():
 
 
 @pytest.mark.asyncio
+async def test_stream_retries_once_after_network_error_before_any_content():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectTimeout("temporary network failure", request=request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "重试成功"}}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "问题", "历史") == ["重试成功"]
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_retries_once_after_incomplete_stream_without_content():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content="data: {\"choices\": []}\n",
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "补发"}}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "问题", "历史") == ["补发"]
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_incomplete_stream_after_content_is_not_retried_or_duplicated():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "半截"}}]}\n',
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks: list[str] = []
+        with pytest.raises(DeepSeekStreamError, match=r"\[DONE\]"):
+            async for chunk in client.stream_answer("问题", "历史"):
+                chunks.append(chunk)
+
+    assert chunks == ["半截"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_error_payload_raises_without_exposing_api_key():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

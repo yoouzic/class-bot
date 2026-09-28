@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from uuid import uuid4
 
 from classbot.domain import QuestionCandidate, TranscriptEvent
@@ -122,10 +121,7 @@ class QuestionDetector:
         self, segment_id: int | str, normalized_text: str
     ) -> str:
         active = self._active_questions.get(segment_id)
-        if (
-            active is not None
-            and self._same_question_text(active.normalized_text, normalized_text)
-        ):
+        if active is not None:
             self._active_questions.move_to_end(segment_id)
             return active.question_id
         return uuid4().hex
@@ -137,16 +133,6 @@ class QuestionDetector:
         self._active_questions.move_to_end(segment_id)
         while len(self._active_questions) > ACTIVE_SEGMENT_LIMIT:
             self._active_questions.popitem(last=False)
-
-    @staticmethod
-    def _same_question_text(previous: str, current: str) -> bool:
-        if previous == current:
-            return True
-        if previous.startswith(current) or current.startswith(previous):
-            return True
-        return (
-            SequenceMatcher(None, previous, current, autojunk=False).ratio() >= 0.6
-        )
 
     @classmethod
     def _score(cls, event: TranscriptEvent, normalized_text: str) -> float:

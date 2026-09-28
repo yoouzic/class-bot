@@ -113,6 +113,32 @@ async def test_prepare_starts_recognizer_without_consuming_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transcript_callback_receives_each_event_text() -> None:
+    transcript_events = [
+        event("请问马克思", is_final=False),
+        event("请问马克思的生辰是什么", is_final=True),
+    ]
+    transcript_texts: list[str] = []
+    recognizer = FakeRecognizer(transcript_events)
+
+    pipeline = LivePipeline(
+        recognizer,
+        FakeDetector({}),
+        FakeClient({}),
+        lambda _card: None,
+        lambda _question_id, _answer: None,
+        on_transcript=transcript_texts.append,
+    )
+
+    await pipeline.run()
+
+    assert transcript_texts == [
+        "请问马克思",
+        "请问马克思的生辰是什么",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_final_question_streams_one_answer_card_to_answered() -> None:
     transcript = event("马克思出生于哪一年？")
     question = candidate("q1", transcript.text)
@@ -138,12 +164,19 @@ async def test_final_question_streams_one_answer_card_to_answered() -> None:
 
     await pipeline.run()
 
-    assert len(card_updates) == 2
+    assert len(card_updates) == 3
     assert card_updates[0] == (
         "q1",
         question.text,
         "",
         CardStatus.DETECTED,
+        None,
+    )
+    assert card_updates[1] == (
+        "q1",
+        question.text,
+        "",
+        CardStatus.ANSWERING,
         None,
     )
     assert card_updates[-1] == (

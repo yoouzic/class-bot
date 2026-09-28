@@ -53,6 +53,7 @@ class FunAsrStreamingRecognizer:
         self._worker_error: Exception | None = None
         self._residual = np.empty(0, dtype=np.float32)
         self._cache: dict[str, Any] = {}
+        self._segment_text = ""
         self._last_text = ""
         self._segment_id = 0
         self._segment_samples = 0
@@ -165,6 +166,7 @@ class FunAsrStreamingRecognizer:
     async def _load_and_start(self, generation: int) -> None:
         operation = asyncio.current_task()
         load_task = asyncio.create_task(asyncio.to_thread(build_model, self.device))
+        load_task.add_done_callback(self._consume_task_result)
         self._model_load_task = load_task
         try:
             try:
@@ -179,6 +181,8 @@ class FunAsrStreamingRecognizer:
             self._model = model
             self._worker = asyncio.create_task(self._run_worker(generation))
         except asyncio.CancelledError:
+            if not load_task.done():
+                load_task.cancel()
             raise
         except Exception as error:
             if self._is_current_generation(generation):
@@ -212,6 +216,7 @@ class FunAsrStreamingRecognizer:
                     self._worker_error = error
 
         if start_task is not None and not start_task.done():
+            start_task.cancel()
             try:
                 await start_task
             except asyncio.CancelledError:
@@ -287,6 +292,7 @@ class FunAsrStreamingRecognizer:
 
         self._residual = np.empty(0, dtype=np.float32)
         self._cache = {}
+        self._segment_text = ""
         self._last_text = ""
         self._segment_id += 1
         self._segment_samples = 0
@@ -318,13 +324,22 @@ class FunAsrStreamingRecognizer:
         for text in _texts_from_result(result):
             if not text.strip():
                 continue
-            self._emit_event(text, is_final=is_final)
-            self._last_text = text
+            if self._segment_text and text.startswith(self._segment_text):
+                self._segment_text = text
+            else:
+                self._segment_text += text
+            self._last_text = self._segment_text
+            self._emit_event(self._segment_text, is_final=is_final)
             emitted = True
         return emitted
 
     def _inference_done(self, task: asyncio.Task[Any]) -> None:
         self._inference_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task[Any]) -> None:
         if not task.cancelled():
             task.exception()
 
@@ -353,6 +368,7 @@ class FunAsrStreamingRecognizer:
     def _reset_transient_state(self) -> None:
         self._residual = np.empty(0, dtype=np.float32)
         self._cache = {}
+        self._segment_text = ""
         self._last_text = ""
         self._segment_id = 0
         self._segment_samples = 0

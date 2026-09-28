@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         "listening": "● 正在监听",
         "stopped": "已停止",
         "asr_error": "ASR 不可用",
+        "mic_error": "麦克风错误",
         "api_error": "API 错误",
     }
     _MAX_CARDS: ClassVar[int] = 128
@@ -96,7 +97,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(self._STATUS_LABELS.get(status, status))
         if status == "listening":
             self._set_listening(True)
-        elif status in {"stopped", "asr_error"}:
+        elif status in {"stopped", "asr_error", "mic_error"}:
             self._set_listening(False)
         elif status == "api_error":
             self._pending_action = None

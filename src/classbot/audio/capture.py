@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 _QUEUE_SIZE = 50
 _STOP = object()
 SAMPLE_RATE = 16_000
+_LOGGER = logging.getLogger(__name__)
+
+
+class AudioCaptureError(RuntimeError):
+    """Raised when opening or receiving from the microphone fails."""
 
 
 class AudioCapture:
@@ -40,28 +46,34 @@ class AudioCapture:
         self._session_token = token
         self._stopped = False
 
-        import sounddevice as sd
-
-        callback = self._make_callback(token, queue, loop)
-        stream = sd.RawInputStream(
-            samplerate=self.sample_rate,
-            blocksize=self.blocksize,
-            channels=1,
-            dtype="int16",
-            device=self.device,
-            callback=callback,
-            start=False,
-        )
-        self._stream = stream
+        stream: Any | None = None
         try:
+            import sounddevice as sd
+
+            callback = self._make_callback(token, queue, loop)
+            stream = sd.RawInputStream(
+                samplerate=self.sample_rate,
+                blocksize=self.blocksize,
+                channels=1,
+                dtype="int16",
+                device=self.device,
+                callback=callback,
+                start=False,
+            )
+            self._stream = stream
             stream.start()
-        except Exception:  # noqa: BLE001 - device errors must propagate after cleanup
+        except Exception as error:
             self._stream = None
             self._session_token = None
-            try:
-                stream.close()
-            finally:
-                raise
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as close_error:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "microphone stream close after open failure failed: %s",
+                        close_error,
+                    )
+            raise AudioCaptureError(f"microphone open failed: {error}") from error
 
     def _make_callback(
         self,
@@ -69,8 +81,18 @@ class AudioCapture:
         queue: asyncio.Queue[bytes | object],
         loop: asyncio.AbstractEventLoop,
     ) -> Any:
-        def callback(indata: Any, _frames: int, _time: Any, _status: Any) -> None:
+        def callback(indata: Any, _frames: int, _time: Any, status: Any) -> None:
             if self._stopped or token is not self._session_token:
+                return
+
+            if status:
+                error = AudioCaptureError(f"audio callback error: {status}")
+                loop.call_soon_threadsafe(
+                    self._enqueue_error,
+                    token,
+                    queue,
+                    error,
+                )
                 return
 
             frame = bytes(indata)
@@ -102,6 +124,29 @@ class AudioCapture:
                 return
             queue.put_nowait(frame)
 
+    def _enqueue_error(
+        self,
+        token: object,
+        queue: asyncio.Queue[bytes | AudioCaptureError | object],
+        error: AudioCaptureError,
+    ) -> None:
+        if (
+            self._stopped
+            or token is not self._session_token
+            or queue is not self._queue
+        ):
+            return
+
+        while True:
+            try:
+                queue.put_nowait(error)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
     def _signal_stop(self, queue: asyncio.Queue[bytes | object]) -> None:
         while True:
             try:
@@ -124,6 +169,8 @@ class AudioCapture:
             item = await queue.get()
             if item is _STOP:
                 return
+            if isinstance(item, AudioCaptureError):
+                raise item
             yield item  # type: ignore[misc]
 
     def stop(self) -> None:

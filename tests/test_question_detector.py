@@ -176,6 +176,40 @@ def test_growing_partial_transcript_with_same_segment_id_reuses_question_id():
     assert final.question_id == first.question_id
 
 
+def test_substantive_revision_reuses_id_within_explicit_segment_only():
+    detector = QuestionDetector(subject="历史")
+    first = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="请问马克思的生辰是什么",
+                is_final=False,
+                segment_id="segment-1",
+            )
+        )
+    )
+    revised = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="请问马克思出生在哪一年",
+                is_final=False,
+                segment_id="segment-1",
+            )
+        )
+    )
+    other_segment = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="请问马克思出生在哪一年",
+                is_final=False,
+                segment_id="segment-2",
+            )
+        )
+    )
+
+    assert revised.question_id == first.question_id
+    assert other_segment.question_id != first.question_id
+
+
 def test_final_revision_reuses_partial_question_id_and_normalizes_text():
     detector = QuestionDetector(subject="历史")
     partial = _one(

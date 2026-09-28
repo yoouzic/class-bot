@@ -37,6 +37,7 @@ class LivePipeline:
         on_card: Callback,
         on_delta: Callback,
         on_status: Callback | None = None,
+        on_transcript: Callback | None = None,
     ) -> None:
         self._recognizer = recognizer
         self._detector = detector
@@ -44,6 +45,7 @@ class LivePipeline:
         self._on_card = on_card
         self._on_delta = on_delta
         self._on_status = on_status
+        self._on_transcript = on_transcript
 
         self._states: OrderedDict[str, _QuestionState] = OrderedDict()
         self._answer_tasks: set[asyncio.Task[None]] = set()
@@ -130,6 +132,11 @@ class LivePipeline:
             async for event in self._recognizer.events():
                 if self._stop_requested:
                     break
+                await self._call(
+                    self._on_transcript,
+                    event.text,
+                    "on_transcript",
+                )
                 candidates = self._detector.feed(event)
                 for candidate in candidates:
                     if self._stop_requested:
@@ -314,6 +321,11 @@ class LivePipeline:
         subject: str,
     ) -> None:
         try:
+            if not self._is_current(state, revision):
+                return
+            state.card.status = CardStatus.ANSWERING
+            state.card.error = None
+            await self._call(self._on_card, state.card, "on_card")
             stream: AsyncIterator[str] = self._client.stream_answer(question, subject)
             async for delta in stream:
                 if not self._is_current(state, revision):

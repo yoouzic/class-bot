@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 from collections.abc import Callable
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,8 +9,12 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import classbot.main as main_module
+from classbot.asr import funasr_streaming
+from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
+from classbot.audio.capture import AudioCaptureError
 from classbot.audio.segmenter import SegmentEvent
 from classbot.config import Settings
+from classbot.pipeline import LivePipeline
 from classbot.ui.main_window import MainWindow
 
 
@@ -33,6 +38,7 @@ class FakeWindow:
         self.statuses: list[str] = []
         self.cards = []
         self.answers = []
+        self.transcripts = []
 
     def upsert_card(self, card):
         self.cards.append(card)
@@ -43,14 +49,18 @@ class FakeWindow:
     def set_status(self, status):
         self.statuses.append(status)
 
+    def set_transcript(self, text):
+        self.transcripts.append(text)
+
 
 _STOP = object()
 
 
 class FakeCapture:
-    def __init__(self, order, *, start_error=None):
+    def __init__(self, order, *, start_error=None, frame_error=None):
         self.order = order
         self.start_error = start_error
+        self.frame_error = frame_error
         self.started = False
         self.stop_calls = 0
         self._queue = asyncio.Queue()
@@ -68,6 +78,8 @@ class FakeCapture:
 
     def frames(self):
         async def stream():
+            if self.frame_error is not None:
+                raise self.frame_error
             while True:
                 frame = await self._queue.get()
                 if frame is _STOP:
@@ -197,6 +209,7 @@ class RuntimeFactory:
         *,
         prepare_error=None,
         capture_start_error=None,
+        capture_frame_error=None,
         run_returns=False,
         run_error=None,
         segment_events=None,
@@ -206,6 +219,7 @@ class RuntimeFactory:
     ):
         self.prepare_error = prepare_error
         self.capture_start_error = capture_start_error
+        self.capture_frame_error = capture_frame_error
         self.run_returns = run_returns
         self.run_error = run_error
         self.segment_events = segment_events
@@ -227,6 +241,7 @@ class RuntimeFactory:
         capture = FakeCapture(
             session["order"],
             start_error=self.capture_start_error,
+            frame_error=self.capture_frame_error,
         )
         session["capture"] = capture
         return capture
@@ -263,6 +278,7 @@ class RuntimeFactory:
         on_card,
         on_delta,
         on_status,
+        on_transcript,
     ):
         session = self._session()
         pipeline = FakePipeline(
@@ -278,6 +294,7 @@ class RuntimeFactory:
         pipeline.on_card = on_card
         pipeline.on_delta = on_delta
         pipeline.on_status = on_status
+        pipeline.on_transcript = on_transcript
         session["pipeline"] = pipeline
         self.sessions.append(session)
         self._current = None
@@ -340,6 +357,23 @@ async def test_start_prepares_pipeline_before_starting_capture_and_builds_runtim
         "pipeline.prepare",
         "capture.start",
     ]
+
+    await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_wires_window_transcript_callback_into_pipeline():
+    factory = RuntimeFactory()
+    window = FakeWindow()
+    controller = make_controller(factory, window)
+
+    await controller.start()
+
+    pipeline = factory.sessions[0]["pipeline"]
+    assert pipeline.on_transcript.__self__ is window
+    assert pipeline.on_transcript.__func__ is window.set_transcript.__func__
+    pipeline.on_transcript("部分转写")
+    assert window.transcripts == ["部分转写"]
 
     await controller.stop()
 
@@ -566,11 +600,29 @@ async def test_start_failure_cleans_components_and_reports_asr_error(
 
 
 @pytest.mark.asyncio
-async def test_audio_loop_begins_segment_pushes_audio_and_finishes_segment():
+async def test_capture_open_error_reports_mic_error():
+    factory = RuntimeFactory(
+        capture_start_error=AudioCaptureError("device open failed")
+    )
+    window = FakeWindow()
+    controller = make_controller(factory, window)
+
+    with pytest.raises(AudioCaptureError):
+        await controller.start()
+
+    assert "mic_error" in window.statuses
+    assert "asr_error" not in window.statuses
+
+
+@pytest.mark.asyncio
+async def test_audio_loop_only_pushes_frames_inside_speech_segment():
     factory = RuntimeFactory(
         segment_events=[
+            SegmentEvent(),
             SegmentEvent(speech_started=True),
+            SegmentEvent(),
             SegmentEvent(speech_ended=True),
+            SegmentEvent(),
         ]
     )
     controller = make_controller(factory)
@@ -579,16 +631,43 @@ async def test_audio_loop_begins_segment_pushes_audio_and_finishes_segment():
     capture = factory.sessions[0]["capture"]
     detector = factory.sessions[0]["detector"]
     recognizer = factory.sessions[0]["recognizer"]
+    capture.feed(b"leading silence")
     capture.feed(b"speech")
-    capture.feed(b"silence")
+    capture.feed(b"speech continuation")
+    capture.feed(b"ending silence")
+    capture.feed(b"trailing silence")
 
     await wait_until(lambda: recognizer.finish_calls == 1)
     assert detector.begin_calls == 1
-    assert recognizer.push_calls == [b"speech", b"silence"]
+    assert recognizer.push_calls == [
+        b"speech",
+        b"speech continuation",
+        b"ending silence",
+    ]
 
     await controller.stop()
     assert runtime.audio_task is not None
     assert runtime.audio_task.done()
+
+
+@pytest.mark.asyncio
+async def test_audio_callback_error_reports_mic_error_and_cleans_runtime():
+    factory = RuntimeFactory(
+        capture_frame_error=AudioCaptureError("callback input overflow")
+    )
+    window = FakeWindow()
+    controller = make_controller(factory, window)
+
+    runtime = await controller.start()
+    await wait_until(
+        lambda: controller.current_runtime is None
+        and runtime.audio_task is not None
+        and runtime.audio_task.done()
+    )
+
+    assert "mic_error" in window.statuses
+    assert "asr_error" not in window.statuses
+    assert factory.sessions[0]["capture"].stop_calls == 1
 
 
 @pytest.mark.asyncio
@@ -635,6 +714,62 @@ async def test_shutdown_waits_for_prepare_and_leaves_no_runtime_or_tasks():
     assert controller._stop_task is None
     assert runtime.audio_task is not None and runtime.audio_task.done()
     assert runtime.pipeline_task is not None and runtime.pipeline_task.done()
+    assert quit_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_returns_while_funasr_model_load_is_cancelled(monkeypatch):
+    load_started = threading.Event()
+    release_load = threading.Event()
+
+    def build_model(_device):
+        load_started.set()
+        release_load.wait()
+        return object()
+
+    monkeypatch.setattr(funasr_streaming, "build_model", build_model)
+    window = FakeWindow()
+    quit_calls = []
+    dependencies = main_module.RuntimeDependencies(
+        capture_factory=lambda: FakeCapture([]),
+        segmenter_factory=FakeSegmenter,
+        recognizer_factory=lambda device: FunAsrStreamingRecognizer(
+            device=device,
+            chunk_samples=160,
+        ),
+        detector_factory=lambda _subject: FakeDetector(),
+        client_factory=lambda _settings: FakeClient(),
+        pipeline_factory=LivePipeline,
+    )
+    controller = main_module.RuntimeController(
+        settings(),
+        window,
+        dependencies=dependencies,
+        quit_callback=lambda: quit_calls.append(True),
+    )
+
+    start_task = asyncio.create_task(controller.start())
+    await asyncio.wait_for(asyncio.to_thread(load_started.wait, 1), timeout=1)
+    shutdown_task = asyncio.create_task(controller.shutdown())
+    shutdown_completed_before_release = True
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(shutdown_task),
+            timeout=0.2,
+        )
+    except TimeoutError:
+        shutdown_completed_before_release = False
+    finally:
+        release_load.set()
+
+    await asyncio.wait_for(shutdown_task, timeout=2)
+    try:
+        await asyncio.wait_for(start_task, timeout=2)
+    except asyncio.CancelledError:
+        pass
+
+    assert shutdown_completed_before_release is True
+    assert controller.current_runtime is None
     assert quit_calls == [True]
 
 

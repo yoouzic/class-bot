@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from classbot.audio.capture import AudioCapture
+from classbot.audio.capture import AudioCapture, AudioCaptureError
 
 
 class FakeStream:
@@ -53,6 +53,41 @@ async def test_fake_stream_callback_and_stop_wake_frames(monkeypatch):
         await asyncio.wait_for(frames.__anext__(), timeout=1)
     assert stream.stopped is True
     assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_callback_status_raises_audio_capture_error(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawInputStream=FakeStream),
+    )
+    capture = AudioCapture()
+    capture.start()
+    frames = capture.frames()
+    stream = FakeStream.instance
+
+    stream.kwargs["callback"](b"frame", 320, None, "input overflow")
+
+    with pytest.raises(AudioCaptureError, match="input overflow"):
+        await asyncio.wait_for(frames.__anext__(), timeout=1)
+    capture.stop()
+
+
+@pytest.mark.asyncio
+async def test_device_open_failure_is_wrapped_as_audio_capture_error(monkeypatch):
+    class FailingStream(FakeStream):
+        def start(self):
+            raise OSError("no microphone")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawInputStream=FailingStream),
+    )
+
+    with pytest.raises(AudioCaptureError, match="no microphone"):
+        AudioCapture().start()
 
 
 @pytest.mark.asyncio

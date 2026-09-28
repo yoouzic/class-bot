@@ -9,7 +9,7 @@ from typing import Any
 from PySide6.QtWidgets import QApplication
 
 from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
-from classbot.audio.capture import AudioCapture
+from classbot.audio.capture import AudioCapture, AudioCaptureError
 from classbot.audio.segmenter import SpeechSegmenter
 from classbot.config import Settings
 from classbot.llm.deepseek_client import DeepSeekClient
@@ -100,6 +100,7 @@ class RuntimeController:
         self._lifecycle_lock = asyncio.Lock()
         self._current_runtime: Runtime | None = None
         self._start_task: asyncio.Task[Runtime] | None = None
+        self._starting_recognizer: Any | None = None
         self._stop_task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
         self._shutdown_requested = False
@@ -181,6 +182,7 @@ class RuntimeController:
                 self.dependencies.recognizer_factory,
                 self.settings.asr_device,
             )
+            self._starting_recognizer = parts["recognizer"]
             parts["detector"] = await self._make(
                 self.dependencies.detector_factory,
                 self.settings.subject,
@@ -197,6 +199,7 @@ class RuntimeController:
                 self.window.upsert_card,
                 self.window.update_answer,
                 self.window.set_status,
+                self.window.set_transcript,
             )
 
             runtime = Runtime(
@@ -225,17 +228,23 @@ class RuntimeController:
             async with self._lifecycle_lock:
                 self._current_runtime = runtime
             return runtime
-        except BaseException:
+        except BaseException as error:
+            status = (
+                "mic_error"
+                if isinstance(error, AudioCaptureError)
+                else "asr_error"
+            )
             if runtime is not None:
                 await asyncio.shield(
-                    self._cleanup_runtime(runtime, status="asr_error")
+                    self._cleanup_runtime(runtime, status=status)
                 )
             else:
                 await asyncio.shield(
-                    self._cleanup_partial(parts, status="asr_error")
+                    self._cleanup_partial(parts, status=status)
                 )
             raise
         finally:
+            self._starting_recognizer = None
             async with self._lifecycle_lock:
                 if self._start_task is owner_task:
                     self._start_task = None
@@ -264,9 +273,10 @@ class RuntimeController:
         try:
             start_task = self._start_task
             if start_task is not None and start_task is not owner_task:
+                await self._cancel_pending_recognizer_start(start_task)
                 try:
                     await asyncio.shield(start_task)
-                except Exception as error:
+                except BaseException as error:
                     _LOGGER.debug("start failed while stopping", exc_info=error)
 
             runtime = self._current_runtime
@@ -304,9 +314,10 @@ class RuntimeController:
                 start_task is not None
                 and start_task is not asyncio.current_task()
             ):
+                await self._cancel_pending_recognizer_start(start_task)
                 try:
                     await asyncio.shield(start_task)
-                except Exception as error:
+                except BaseException as error:
                     _LOGGER.debug(
                         "start failed while shutting down",
                         exc_info=error,
@@ -351,16 +362,26 @@ class RuntimeController:
             _LOGGER.error("classbot UI operation failed", exc_info=error)
 
     async def _audio_loop(self, runtime: Runtime) -> None:
+        in_speech = False
         try:
             async for frame in runtime.capture.frames():
                 event = runtime.segmenter.accept(frame)
                 if event.speech_started:
+                    in_speech = True
                     runtime.detector.begin_segment()
-                runtime.recognizer.push_audio(frame)
+                if in_speech:
+                    runtime.recognizer.push_audio(frame)
                 if event.speech_ended:
                     runtime.recognizer.finish_segment()
+                    in_speech = False
         except asyncio.CancelledError:
             raise
+        except AudioCaptureError:
+            _LOGGER.exception("microphone runtime failed")
+            if not runtime.cleanup_started:
+                await asyncio.shield(
+                    self._cleanup_runtime(runtime, status="mic_error")
+                )
         except Exception:
             _LOGGER.exception("audio runtime failed")
             if not runtime.cleanup_started:
@@ -431,6 +452,30 @@ class RuntimeController:
             await self._safe_call(parts.get("recognizer"), "stop")
         await self._close_client(parts.get("client"))
         await self._set_status(status)
+
+    async def _cancel_pending_recognizer_start(
+        self,
+        start_task: asyncio.Task[Any],
+    ) -> None:
+        if start_task.done():
+            return
+
+        recognizer = self._starting_recognizer
+        if recognizer is None:
+            return
+
+        recognizer_start = getattr(recognizer, "_start_task", None)
+        model_load = getattr(recognizer, "_model_load_task", None)
+        start_pending = (
+            recognizer_start is not None and not recognizer_start.done()
+        )
+        load_pending = model_load is not None and not model_load.done()
+        if not start_pending and not load_pending:
+            return
+
+        error = await self._safe_call(recognizer, "stop")
+        if error is not None:
+            _LOGGER.warning("cancel pending recognizer start failed: %s", error)
 
     async def _settle_pipeline_task(
         self,

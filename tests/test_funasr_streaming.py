@@ -98,6 +98,30 @@ async def test_partial_and_final_events_keep_segment_id_and_use_streaming_parame
 
 
 @pytest.mark.asyncio
+async def test_streaming_chunks_accumulate_within_one_segment(monkeypatch):
+    model = FakeModel(["马克思的", "生辰是什么", ""])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    first = await _next_event(events)
+    recognizer.push_audio(_pcm(160))
+    second = await _next_event(events)
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert first.text == "马克思的"
+    assert second.text == "马克思的生辰是什么"
+    assert final.text == "马克思的生辰是什么"
+    assert first.segment_id == second.segment_id == final.segment_id == 0
+    assert final.is_final is True
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
 async def test_finish_increments_segment_id_and_new_segment_emits_new_event(monkeypatch):
     model = FakeModel(["第一段", "第一段", "第二段"])
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
@@ -184,7 +208,8 @@ async def test_stop_during_model_load_invalidates_old_start_and_allows_restart(
     await asyncio.sleep(0)
     release_load.set()
     await asyncio.wait_for(stop_task, timeout=2)
-    await asyncio.wait_for(start_task, timeout=2)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(start_task, timeout=2)
 
     assert recognizer._worker is None
     assert recognizer._stopped is True
@@ -197,6 +222,41 @@ async def test_stop_during_model_load_invalidates_old_start_and_allows_restart(
     assert event.segment_id == 0
     await recognizer.stop()
     assert len(models) == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_model_load_without_waiting_for_build_thread(
+    monkeypatch,
+):
+    load_started = threading.Event()
+    release_load = threading.Event()
+
+    def build(device):
+        load_started.set()
+        release_load.wait()
+        return FakeModel([])
+
+    monkeypatch.setattr(funasr_streaming, "build_model", build)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    start_task = asyncio.create_task(recognizer.start())
+    await asyncio.wait_for(asyncio.to_thread(load_started.wait, 1), timeout=1)
+
+    stop_task = asyncio.create_task(recognizer.stop())
+    stopped_without_building = True
+    try:
+        await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.2)
+    except TimeoutError:
+        stopped_without_building = False
+    finally:
+        release_load.set()
+
+    await asyncio.wait_for(stop_task, timeout=2)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(start_task, timeout=2)
+
+    assert stopped_without_building is True
+    assert recognizer._worker is None
+    assert recognizer._start_task is None
 
 
 @pytest.mark.asyncio

@@ -121,6 +121,7 @@ def test_pending_toggle_ignores_repeated_click_until_status_ack(window):
         ("listening", "● 正在监听", "暂停监听"),
         ("stopped", "已停止", "开始监听"),
         ("asr_error", "ASR 不可用", "开始监听"),
+        ("mic_error", "麦克风错误", "开始监听"),
         ("api_error", "API 错误", "暂停监听"),
         ("custom_status", "custom_status", None),
     ],
