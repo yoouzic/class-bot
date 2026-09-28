@@ -35,9 +35,8 @@ async def test_fake_stream_callback_and_stop_wake_frames(monkeypatch):
         types.SimpleNamespace(RawInputStream=FakeStream),
     )
     capture = AudioCapture(device=3)
-    frames = capture.frames()
-
     capture.start()
+    frames = capture.frames()
     stream = FakeStream.instance
     assert stream.kwargs["samplerate"] == 16000
     assert stream.kwargs["blocksize"] == 320
@@ -54,6 +53,29 @@ async def test_fake_stream_callback_and_stop_wake_frames(monkeypatch):
         await asyncio.wait_for(frames.__anext__(), timeout=1)
     assert stream.stopped is True
     assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_frames_bind_to_session_queue_across_restart(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawInputStream=FakeStream),
+    )
+    capture = AudioCapture()
+
+    capture.start()
+    old_frames = capture.frames()
+    capture.stop()
+
+    capture.start()
+    new_frames = capture.frames()
+    FakeStream.instance.kwargs["callback"](b"new-session", 320, None, None)
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(old_frames.__anext__(), timeout=1)
+    assert await asyncio.wait_for(new_frames.__anext__(), timeout=1) == b"new-session"
+    capture.stop()
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,7 @@ class FunAsrStreamingRecognizer:
         self._model: Any | None = None
         self._worker: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
         self._stop_task: asyncio.Task[None] | None = None
         self._model_load_task: asyncio.Task[Any] | None = None
         self._inference_tasks: set[asyncio.Task[Any]] = set()
@@ -57,23 +58,36 @@ class FunAsrStreamingRecognizer:
         self._closing = False
 
     async def start(self) -> None:
-        if self._stop_task is not None:
-            await self._await_cleanup_task(self._stop_task)
-
-        if self._worker is not None and not self._stopped:
-            return
-
-        if self._start_task is not None:
-            await asyncio.shield(self._start_task)
-            return
-
         await self._wait_for_inference_tasks()
-        self._generation += 1
-        generation = self._generation
-        self._begin_session()
+        operation: asyncio.Task[None] | None = None
+        while operation is None:
+            wait_task: asyncio.Task[None] | None = None
+            async with self._start_lock:
+                if self._stop_task is not None:
+                    if self._stop_task.done():
+                        self._stop_task = None
+                    else:
+                        wait_task = self._stop_task
+                elif self._worker is not None and not self._stopped:
+                    return
+                elif self._start_task is not None:
+                    if self._start_task.done():
+                        self._start_task = None
+                    else:
+                        wait_task = self._start_task
 
-        operation = asyncio.create_task(self._load_and_start(generation))
-        self._start_task = operation
+                if wait_task is None:
+                    self._generation += 1
+                    generation = self._generation
+                    self._begin_session()
+                    operation = asyncio.create_task(
+                        self._load_and_start(generation)
+                    )
+                    self._start_task = operation
+
+            if wait_task is not None:
+                await asyncio.shield(wait_task)
+
         try:
             await asyncio.shield(operation)
         except asyncio.CancelledError:

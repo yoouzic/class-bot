@@ -92,9 +92,15 @@ class AudioCapture:
                 except asyncio.QueueEmpty:
                     return
 
-    async def frames(self) -> AsyncIterator[bytes]:
+    def frames(self) -> AsyncIterator[bytes]:
+        queue = self._queue
+        return self._frames_from(queue)
+
+    async def _frames_from(
+        self, queue: asyncio.Queue[bytes | object]
+    ) -> AsyncIterator[bytes]:
         while True:
-            item = await self._queue.get()
+            item = await queue.get()
             if item is _STOP:
                 return
             yield item  # type: ignore[misc]

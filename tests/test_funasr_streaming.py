@@ -200,6 +200,43 @@ async def test_stop_during_model_load_invalidates_old_start_and_allows_restart(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_start_then_immediate_restart_does_not_return_empty_worker(
+    monkeypatch,
+):
+    load_started = threading.Event()
+    release_load = threading.Event()
+    calls = 0
+
+    def build(device):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            load_started.set()
+            release_load.wait(timeout=3)
+        return FakeModel(["新会话"])
+
+    monkeypatch.setattr(funasr_streaming, "build_model", build)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    old_start = asyncio.create_task(recognizer.start())
+    await asyncio.wait_for(asyncio.to_thread(load_started.wait, 1), timeout=1)
+
+    old_start.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await old_start
+
+    new_start = asyncio.create_task(recognizer.start())
+    await asyncio.sleep(0)
+    release_load.set()
+    await asyncio.wait_for(new_start, timeout=2)
+
+    assert calls == 2
+    events = recognizer.events()
+    recognizer.push_audio(_pcm(160))
+    assert (await _next_event(events)).text == "新会话"
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_cleans_session_state_and_is_idempotent(monkeypatch):
     models = []
 
