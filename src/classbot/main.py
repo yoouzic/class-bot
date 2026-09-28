@@ -122,24 +122,40 @@ class RuntimeController:
             if self._shutdown_requested:
                 raise RuntimeError("classbot is shutting down")
 
-            if self._current_runtime is not None:
-                return self._current_runtime
-
-            task = self._start_task
-            if task is None or task.done():
-                task = asyncio.create_task(
-                    self._start_owner(),
-                    name="classbot-runtime-start",
-                )
-                self._start_task = task
+            start_task = self._start_task
+            if start_task is not None and not start_task.done():
+                task: asyncio.Task[Any] = start_task
+                wait_for_start = True
+                wait_for_stop = False
+            else:
+                stop_task = self._stop_task
+                if stop_task is not None and not stop_task.done():
+                    task = stop_task
+                    wait_for_start = False
+                    wait_for_stop = True
+                elif self._current_runtime is not None:
+                    return self._current_runtime
+                else:
+                    start_task = asyncio.create_task(
+                        self._start_owner(),
+                        name="classbot-runtime-start",
+                    )
+                    self._start_task = start_task
+                    task = start_task
+                    wait_for_start = True
+                    wait_for_stop = False
 
         try:
-            return await asyncio.shield(task)
+            result = await asyncio.shield(task)
         finally:
-            if task.done():
+            if wait_for_start and task.done():
                 async with self._lifecycle_lock:
                     if self._start_task is task:
                         self._start_task = None
+
+        if wait_for_stop:
+            return await self.start()
+        return result
 
     async def _start_owner(self) -> Runtime:
         parts: dict[str, Any] = {}
@@ -181,8 +197,6 @@ class RuntimeController:
                 client=parts["client"],
                 pipeline=parts["pipeline"],
             )
-            async with self._lifecycle_lock:
-                self._current_runtime = runtime
 
             # Model loading happens before the microphone is opened.
             await self._maybe_await(runtime.pipeline.prepare())
@@ -195,6 +209,11 @@ class RuntimeController:
                 self._pipeline_loop(runtime),
                 name="classbot-pipeline-loop",
             )
+
+            # Do not expose a partially prepared runtime. A concurrent stop
+            # waits on _start_task until this complete runtime is available.
+            async with self._lifecycle_lock:
+                self._current_runtime = runtime
             return runtime
         except BaseException:
             if runtime is not None:

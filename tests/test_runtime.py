@@ -136,10 +136,18 @@ class FakePipeline:
         *,
         prepare_error=None,
         run_returns=False,
+        prepare_started=None,
+        release_prepare=None,
+        stop_started=None,
+        release_stop=None,
     ):
         self.order = order
         self.prepare_error = prepare_error
         self.run_returns = run_returns
+        self.prepare_started = prepare_started
+        self.release_prepare = release_prepare
+        self.stop_started = stop_started
+        self.release_stop = release_stop
         self.prepare_calls = 0
         self.run_calls = 0
         self.stop_calls = 0
@@ -151,6 +159,9 @@ class FakePipeline:
     async def prepare(self):
         self.prepare_calls += 1
         self.order.append("pipeline.prepare")
+        if self.prepare_started is not None:
+            self.prepare_started.set()
+            await self.release_prepare.wait()
         if self.prepare_error is not None:
             raise self.prepare_error
 
@@ -162,6 +173,9 @@ class FakePipeline:
 
     async def stop(self):
         self.stop_calls += 1
+        if self.stop_started is not None:
+            self.stop_started.set()
+            await self.release_stop.wait()
         self._stop_event.set()
 
 
@@ -173,11 +187,17 @@ class RuntimeFactory:
         capture_start_error=None,
         run_returns=False,
         segment_events=None,
+        block_prepare=False,
+        block_stop=False,
     ):
         self.prepare_error = prepare_error
         self.capture_start_error = capture_start_error
         self.run_returns = run_returns
         self.segment_events = segment_events
+        self.prepare_started = asyncio.Event() if block_prepare else None
+        self.release_prepare = asyncio.Event() if block_prepare else None
+        self.stop_started = asyncio.Event() if block_stop else None
+        self.release_stop = asyncio.Event() if block_stop else None
         self.sessions = []
         self._current = None
 
@@ -233,6 +253,10 @@ class RuntimeFactory:
             session["order"],
             prepare_error=self.prepare_error,
             run_returns=self.run_returns,
+            prepare_started=self.prepare_started,
+            release_prepare=self.release_prepare,
+            stop_started=self.stop_started,
+            release_stop=self.release_stop,
         )
         pipeline.on_card = on_card
         pipeline.on_delta = on_delta
@@ -299,6 +323,61 @@ async def test_start_prepares_pipeline_before_starting_capture_and_builds_runtim
         "pipeline.prepare",
         "capture.start",
     ]
+
+    await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_waits_for_prepare_and_shares_complete_runtime():
+    factory = RuntimeFactory(block_prepare=True)
+    controller = make_controller(factory)
+
+    first_start = asyncio.create_task(controller.start())
+    await factory.prepare_started.wait()
+    second_start = asyncio.create_task(controller.start())
+    await asyncio.sleep(0)
+
+    assert not second_start.done()
+    assert controller.current_runtime is None
+    assert len(factory.sessions) == 1
+
+    factory.release_prepare.set()
+    first_runtime, second_runtime = await asyncio.gather(
+        first_start,
+        second_start,
+    )
+
+    assert first_runtime is second_runtime
+    assert first_runtime.audio_task is not None
+    assert first_runtime.pipeline_task is not None
+    assert controller.current_runtime is first_runtime
+    assert len(factory.sessions) == 1
+
+    await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_waits_for_in_progress_stop_before_building_new_runtime():
+    factory = RuntimeFactory(block_stop=True)
+    controller = make_controller(factory)
+
+    first_runtime = await controller.start()
+    stop_task = asyncio.create_task(controller.stop())
+    await factory.stop_started.wait()
+
+    second_start = asyncio.create_task(controller.start())
+    await asyncio.sleep(0)
+
+    assert not second_start.done()
+    assert len(factory.sessions) == 1
+
+    factory.release_stop.set()
+    await stop_task
+    second_runtime = await second_start
+
+    assert second_runtime is not first_runtime
+    assert second_runtime.pipeline is not first_runtime.pipeline
+    assert len(factory.sessions) == 2
 
     await controller.stop()
 
