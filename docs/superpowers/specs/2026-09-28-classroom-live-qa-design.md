@@ -13,7 +13,7 @@
 采用“本地实时音频处理 + 文本问答 API”的混合架构。
 
 - 本地完成麦克风采集、语音活动检测、临时转写缓存、问题候选判断和 UI 展示，避免把连续环境声音全部上传。
-- 语音识别使用可替换的实时中文 ASR 接口；第一版默认使用本地流式中文 ASR 适配器，避免把 DeepSeek 当成音频识别服务。
+- 语音识别使用可替换的实时中文 ASR 接口；第一版默认使用 FunASR 的 `paraformer-zh-streaming`，按官方示例以约 600 ms 音频块和约 300 ms look-ahead 做本地流式识别，避免把 DeepSeek 当成音频识别服务。
 - 问答使用 DeepSeek V4.1 Flash。官方文档当前将该版本的 API 模型名写作 `deepseek-flash`，Chat Completions 支持 `stream: true` 的 SSE 增量输出；官方请求结构是文本/图像内容，因此麦克风音频必须先经过 ASR 转成文本。
 - UI 使用 PySide6，作为 Windows 桌面悬浮窗运行。第一版只输出文字，不向教室播放声音，避免打扰课堂或形成声学反馈。
 
@@ -54,11 +54,12 @@
 ```text
 start() -> None
 push_audio(frame: bytes) -> None
+finish_segment() -> None
 events() -> AsyncIterator[TranscriptEvent]
 stop() -> None
 ```
 
-`TranscriptEvent` 至少包含：`text`、`is_final`、`start_ms`、`end_ms` 和 `confidence`。第一版提供本地实时中文 ASR 实现和 fake 实现；真实 ASR 的模型加载失败必须在 UI 中显示可诊断错误，而不是静默假装监听成功。
+`TranscriptEvent` 至少包含：`text`、`is_final`、`start_ms`、`end_ms` 和 `confidence`。第一版提供基于 FunASR `paraformer-zh-streaming` 的本地实时中文 ASR 实现和 fake 实现；`finish_segment()` 将当前缓存标记为 final 并清理流式 cache。真实 ASR 的模型加载失败必须在 UI 中显示可诊断错误，而不是静默假装监听成功。实现参考：https://github.com/modelscope/FunASR/blob/main/examples/industrial_data_pretraining/paraformer/README.md
 
 ### 4.4 `QuestionDetector`
 
