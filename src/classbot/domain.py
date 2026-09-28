@@ -19,6 +19,12 @@ class TranscriptEvent:
     confidence: float = 0.0
     pause_ms: int = 0
 
+    def __post_init__(self) -> None:
+        if self.start_ms > self.end_ms:
+            raise ValueError("start_ms must not exceed end_ms")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
 
 @dataclass(frozen=True, slots=True)
 class QuestionCandidate:
@@ -27,6 +33,14 @@ class QuestionCandidate:
     subject: str
     confidence: float
     is_final: bool
+
+    def __post_init__(self) -> None:
+        if not self.question_id.strip():
+            raise ValueError("question_id must not be empty")
+        if not self.text.strip():
+            raise ValueError("text must not be empty")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
 
 
 @dataclass(slots=True)
@@ -37,3 +51,9 @@ class AnswerCard:
     answer: str = ""
     status: CardStatus = CardStatus.DETECTED
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.question_id.strip():
+            raise ValueError("question_id must not be empty")
+        if not self.question.strip():
+            raise ValueError("question must not be empty")

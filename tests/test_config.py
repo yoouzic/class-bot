@@ -1,4 +1,19 @@
+import pytest
+
 from classbot.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def clear_classbot_environment(monkeypatch):
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "CLASSBOT_SUBJECT",
+        "CLASSBOT_MODEL",
+        "CLASSBOT_BASE_URL",
+        "CLASSBOT_ASR_DEVICE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("classbot.config.load_dotenv", lambda: None)
 
 
 def test_from_env_reads_config_values(monkeypatch):
