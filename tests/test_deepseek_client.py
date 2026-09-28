@@ -204,6 +204,61 @@ async def test_incomplete_stream_after_content_is_not_retried_or_duplicated():
 
 
 @pytest.mark.asyncio
+async def test_stream_retries_once_after_empty_completed_stream():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content="data: [DONE]\n",
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": "重试后回答"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "问题", "历史") == ["重试后回答"]
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_completed_stream_retries_only_once():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content="data: [DONE]\n",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "问题", "历史") == []
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_uses_retry_after_and_skips_followup_request():
     calls = 0
 

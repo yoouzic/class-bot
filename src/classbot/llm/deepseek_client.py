@@ -150,6 +150,8 @@ class DeepSeekClient:
                         "DeepSeek stream ended before data: [DONE]",
                         retryable=True,
                     )
+                if not yielded_content and attempt == 0:
+                    continue
                 return
             except httpx.TransportError:
                 if attempt == 0 and not yielded_content:
