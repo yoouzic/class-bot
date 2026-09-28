@@ -216,6 +216,7 @@ class TranscriptEvent:
     end_ms: int = 0
     confidence: float = 0.0
     pause_ms: int = 0
+    segment_id: int | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -871,6 +872,8 @@ class FunAsrStreamingRecognizer:
         self._worker: asyncio.Task | None = None
         self._running = False
         self._segment_ms = 0
+        self._segment_id = 0
+        self._last_text = ""
 
     async def start(self) -> None:
         self._model = await asyncio.to_thread(build_model, self._device)
@@ -897,9 +900,22 @@ class FunAsrStreamingRecognizer:
             elif kind == "finish":
                 if self._audio:
                     await self._infer(bytes(self._audio), is_final=True)
-                    self._audio.clear()
+                elif self._last_text:
+                    await self._output.put(
+                        TranscriptEvent(
+                            text=self._last_text,
+                            is_final=True,
+                            start_ms=self._segment_ms,
+                            end_ms=self._segment_ms,
+                            confidence=0.0,
+                            segment_id=self._segment_id,
+                        )
+                    )
+                self._audio.clear()
                 self._cache = {}
+                self._last_text = ""
                 self._segment_ms = 0
+                self._segment_id += 1
 
     async def _infer_ready_chunks(self) -> None:
         chunk_bytes = self._chunk_samples * 2
@@ -923,6 +939,7 @@ class FunAsrStreamingRecognizer:
         )
         text = (result[0].get("text") if result else "") or ""
         if text:
+            self._last_text = text
             duration_ms = int(len(samples) / 16)
             event = TranscriptEvent(
                 text=text,
@@ -930,6 +947,7 @@ class FunAsrStreamingRecognizer:
                 start_ms=self._segment_ms,
                 end_ms=self._segment_ms + duration_ms,
                 confidence=0.0,
+                segment_id=self._segment_id,
             )
             self._segment_ms += duration_ms
             await self._output.put(event)
@@ -1338,7 +1356,7 @@ git commit -m "feat: add classroom floating answer window"
 
 - [ ] **Step 1: 写启动入口，明确依赖组装顺序**
 
-`main.py` must construct these objects in order: `Settings` → `MainWindow` → `AudioCapture` → `SpeechSegmenter` → `FunAsrStreamingRecognizer` → `QuestionDetector` → `DeepSeekClient` → `LivePipeline`. The audio loop must call `recognizer.push_audio(frame)` for every frame and call `recognizer.finish_segment()` when `SpeechSegmenter.accept(frame).speech_ended` is true.
+`main.py` must construct these objects in order: `Settings` → `MainWindow` → `AudioCapture` → `SpeechSegmenter` → `FunAsrStreamingRecognizer` → `QuestionDetector` → `DeepSeekClient` → `LivePipeline`. The audio loop must call `detector.begin_segment()` when `SpeechSegmenter.accept(frame).speech_started` is true, call `recognizer.push_audio(frame)` for every frame, and call `recognizer.finish_segment()` when `speech_ended` is true. `start_ms` and `end_ms` are timing metadata only and must not be used as a segment identity.
 
 Implement the qasync entry point as:
 
@@ -1368,8 +1386,10 @@ async def run_app(window: MainWindow, pipeline: LivePipeline, capture: AudioCapt
         async for frame in capture.frames():
             recognizer = pipeline.recognizer
             recognizer.push_audio(frame)
-            event = segmenter.accept(frame)
-            if event.speech_ended:
+            segment_event = segmenter.accept(frame)
+            if segment_event.speech_started:
+                pipeline.detector.begin_segment()
+            if segment_event.speech_ended:
                 recognizer.finish_segment()
 
     audio_task: asyncio.Task | None = None

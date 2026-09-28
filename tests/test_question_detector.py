@@ -39,6 +39,42 @@ def test_feed_returns_a_list_for_question_candidates():
     assert isinstance(candidates[0], QuestionCandidate)
 
 
+def test_begin_segment_separates_identical_final_without_event_segment_id():
+    detector = QuestionDetector(subject="历史")
+    event = TranscriptEvent(text="马克思的生辰是什么？", is_final=True)
+
+    first = _one(detector.feed(event))
+    detector.begin_segment()
+    second = _one(detector.feed(event))
+
+    assert second.question_id != first.question_id
+
+
+def test_event_segment_id_takes_priority_over_fallback_identity():
+    detector = QuestionDetector(subject="历史")
+    detector.begin_segment("fallback")
+
+    explicit = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么",
+                is_final=False,
+                segment_id="explicit",
+            )
+        )
+    )
+    fallback = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么呢",
+                is_final=False,
+            )
+        )
+    )
+
+    assert fallback.question_id != explicit.question_id
+
+
 def test_partial_question_triggers_before_final_transcript():
     detector = QuestionDetector(subject="历史")
 

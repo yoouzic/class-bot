@@ -50,20 +50,30 @@ class QuestionDetector:
     def __init__(self, subject: str, minimum_length: int = 8) -> None:
         self.subject = subject
         self.minimum_length = minimum_length
+        self._fallback_segment_id: int | str = uuid4().hex
         self._active_question: _ActiveQuestion | None = None
         self._recent_events: deque[
             tuple[str, bool, int, int, int | str | None, bool]
         ] = deque(maxlen=RECENT_EVENT_LIMIT)
 
+    def begin_segment(self, segment_id: int | str | None = None) -> None:
+        """Start a fresh segment and reset its active/deduplication state."""
+        self._fallback_segment_id = (
+            segment_id if segment_id is not None else uuid4().hex
+        )
+        self._active_question = None
+        self._recent_events.clear()
+
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
         """Return zero or one candidate for a transcript event."""
         normalized_text = normalize_text(event.text)
+        segment_id = self._segment_id_for(event)
         signature = (
             normalized_text,
             event.is_final,
             event.start_ms,
             event.end_ms,
-            event.segment_id,
+            segment_id,
             self._has_question_mark(event.text),
         )
         if signature in self._recent_events:
@@ -78,7 +88,7 @@ class QuestionDetector:
                 self._active_question = None
             return []
 
-        question_id = self._question_id_for(event, normalized_text)
+        question_id = self._question_id_for(segment_id, normalized_text)
         candidate = QuestionCandidate(
             question_id=question_id,
             text=normalized_text,
@@ -91,29 +101,30 @@ class QuestionDetector:
             question_id=question_id,
             normalized_text=normalized_text,
             is_final=event.is_final,
-            segment_id=event.segment_id,
+            segment_id=segment_id,
         )
         return [candidate]
 
-    def _question_id_for(self, event: TranscriptEvent, normalized_text: str) -> str:
+    def _segment_id_for(self, event: TranscriptEvent) -> int | str:
+        if event.segment_id is not None:
+            return event.segment_id
+        return self._fallback_segment_id
+
+    def _question_id_for(
+        self, segment_id: int | str, normalized_text: str
+    ) -> str:
         active = self._active_question
         if (
             active is not None
-            and self._same_segment(active, event)
+            and self._same_segment(active, segment_id)
             and self._same_question_text(active.normalized_text, normalized_text)
         ):
             return active.question_id
         return uuid4().hex
 
     @staticmethod
-    def _same_segment(active: _ActiveQuestion, event: TranscriptEvent) -> bool:
-        if active.segment_id is not None or event.segment_id is not None:
-            return (
-                active.segment_id is not None
-                and event.segment_id is not None
-                and active.segment_id == event.segment_id
-            )
-        return True
+    def _same_segment(active: _ActiveQuestion, segment_id: int | str) -> bool:
+        return active.segment_id == segment_id
 
     @staticmethod
     def _same_question_text(previous: str, current: str) -> bool:
