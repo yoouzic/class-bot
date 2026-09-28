@@ -126,7 +126,10 @@ async def test_stream_error_payload_raises_without_exposing_api_key():
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
-            content='data: {"error": {"message": "upstream failed"}}\n',
+            content=(
+                'data: {"error": '
+                '{"message": "upstream failed: test-key"}}\n'
+            ),
         )
 
     settings = _settings()
@@ -137,6 +140,7 @@ async def test_stream_error_payload_raises_without_exposing_api_key():
         with pytest.raises(DeepSeekStreamError, match="upstream failed") as error:
             await _answer_chunks(client, "问题", "历史")
 
+    assert "[REDACTED]" in str(error.value)
     assert "test-key" not in str(error.value)
 
 
@@ -222,9 +226,12 @@ async def test_injected_client_is_not_closed_by_aclose():
 async def test_owned_client_exposes_base_url_timeout_and_can_close():
     settings = _settings()
     client = DeepSeekClient(settings)
+    owned_http_client = client._http_client
 
-    assert client._http_client.base_url == httpx.URL(settings.base_url)
-    assert client._http_client.timeout.connect == 5.0
-    assert client._http_client.timeout.read == 30.0
+    assert owned_http_client.base_url == httpx.URL(settings.base_url)
+    assert owned_http_client.timeout.connect == 5.0
+    assert owned_http_client.timeout.read == 30.0
 
     await client.aclose()
+
+    assert owned_http_client.is_closed is True
