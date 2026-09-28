@@ -127,11 +127,14 @@ class FakeDetector:
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, close_error=None):
+        self.close_error = close_error
         self.close_calls = 0
 
     async def aclose(self):
         self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class FakePipeline:
@@ -199,12 +202,14 @@ class RuntimeFactory:
         segment_events=None,
         block_prepare=False,
         block_stop=False,
+        client_close_error=None,
     ):
         self.prepare_error = prepare_error
         self.capture_start_error = capture_start_error
         self.run_returns = run_returns
         self.run_error = run_error
         self.segment_events = segment_events
+        self.client_close_error = client_close_error
         self.prepare_started = asyncio.Event() if block_prepare else None
         self.release_prepare = asyncio.Event() if block_prepare else None
         self.stop_started = asyncio.Event() if block_stop else None
@@ -246,7 +251,7 @@ class RuntimeFactory:
 
     def client(self, _settings):
         session = self._session()
-        client = FakeClient()
+        client = FakeClient(self.client_close_error)
         session["client"] = client
         return client
 
@@ -435,6 +440,64 @@ async def test_start_waits_for_in_progress_stop_before_building_new_runtime():
     assert len(factory.sessions) == 2
 
     await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_stop_start_race_waits_for_stop_and_returns_new_runtime():
+    factory = RuntimeFactory(block_prepare=True, block_stop=True)
+    controller = make_controller(factory)
+
+    first_start = asyncio.create_task(controller.start())
+    await factory.prepare_started.wait()
+    stop_task = asyncio.create_task(controller.stop())
+    second_start = asyncio.create_task(controller.start())
+    await asyncio.sleep(0)
+
+    assert not second_start.done()
+    factory.release_prepare.set()
+    await factory.stop_started.wait()
+    try:
+        assert not second_start.done()
+    finally:
+        factory.release_stop.set()
+
+    first_runtime, _, second_runtime = await asyncio.gather(
+        first_start,
+        stop_task,
+        second_start,
+    )
+
+    assert first_runtime is not second_runtime
+    assert first_runtime.cleaned is True
+    assert controller.current_runtime is second_runtime
+    assert len(factory.sessions) == 2
+
+    await controller.stop()
+
+
+@pytest.mark.asyncio
+async def test_client_close_error_does_not_block_runtime_cleanup():
+    factory = RuntimeFactory(client_close_error=RuntimeError("close failed"))
+    controller = make_controller(factory)
+
+    runtime = await controller.start()
+    stop_error = None
+    try:
+        await controller.stop()
+    except Exception as error:  # noqa: BLE001 - assertion captures old behavior
+        stop_error = error
+
+    session = factory.sessions[0]
+    assert stop_error is None
+    assert session["capture"].stop_calls == 1
+    assert session["pipeline"].stop_calls == 1
+    assert session["client"].close_calls == 1
+    assert runtime.cleaned is True
+    assert controller.current_runtime is None
+
+    await controller.stop()
+    assert session["capture"].stop_calls == 1
+    assert session["pipeline"].stop_calls == 1
 
 
 @pytest.mark.asyncio

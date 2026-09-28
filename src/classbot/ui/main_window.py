@@ -96,8 +96,15 @@ class MainWindow(QMainWindow):
         self.status_label.setText(self._STATUS_LABELS.get(status, status))
         if status == "listening":
             self._set_listening(True)
-        elif status in {"stopped", "asr_error", "api_error"}:
+        elif status in {"stopped", "asr_error"}:
             self._set_listening(False)
+        elif status == "api_error":
+            self._pending_action = None
+            if self._is_listening:
+                self.toggle_button.setEnabled(True)
+                self.toggle_button.setText("暂停监听")
+            else:
+                self._set_listening(False)
 
     def set_transcript(self, text: str) -> None:
         """Display the latest transcript or its empty-state placeholder."""

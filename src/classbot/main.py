@@ -118,44 +118,53 @@ class RuntimeController:
 
     async def start(self) -> Runtime:
         """Prepare and start a fresh runtime, once per active session."""
-        async with self._lifecycle_lock:
-            if self._shutdown_requested:
-                raise RuntimeError("classbot is shutting down")
+        while True:
+            wait_task: asyncio.Task[Any] | None = None
+            cleanup_runtime: Runtime | None = None
+            recheck_after_wait = False
 
-            start_task = self._start_task
-            if start_task is not None and not start_task.done():
-                task: asyncio.Task[Any] = start_task
-                wait_for_start = True
-                wait_for_stop = False
-            else:
-                stop_task = self._stop_task
-                if stop_task is not None and not stop_task.done():
-                    task = stop_task
-                    wait_for_start = False
-                    wait_for_stop = True
-                elif self._current_runtime is not None:
-                    return self._current_runtime
+            async with self._lifecycle_lock:
+                if self._shutdown_requested:
+                    raise RuntimeError("classbot is shutting down")
+
+                start_task = self._start_task
+                if start_task is not None and not start_task.done():
+                    wait_task = start_task
+                    recheck_after_wait = True
                 else:
-                    start_task = asyncio.create_task(
-                        self._start_owner(),
-                        name="classbot-runtime-start",
-                    )
-                    self._start_task = start_task
-                    task = start_task
-                    wait_for_start = True
-                    wait_for_stop = False
+                    stop_task = self._stop_task
+                    if stop_task is not None and not stop_task.done():
+                        wait_task = stop_task
+                        recheck_after_wait = True
+                    else:
+                        runtime = self._current_runtime
+                        if runtime is None:
+                            start_task = asyncio.create_task(
+                                self._start_owner(),
+                                name="classbot-runtime-start",
+                            )
+                            self._start_task = start_task
+                            wait_task = start_task
+                            recheck_after_wait = False
+                        elif runtime.cleaned:
+                            self._current_runtime = None
+                        elif runtime.cleanup_started:
+                            cleanup_runtime = runtime
+                        else:
+                            return runtime
 
-        try:
-            result = await asyncio.shield(task)
-        finally:
-            if wait_for_start and task.done():
-                async with self._lifecycle_lock:
-                    if self._start_task is task:
-                        self._start_task = None
+            if cleanup_runtime is not None:
+                await asyncio.shield(
+                    self._wait_for_runtime_cleanup(cleanup_runtime)
+                )
+                continue
 
-        if wait_for_stop:
-            return await self.start()
-        return result
+            if wait_task is not None:
+                result = await asyncio.shield(wait_task)
+                if not recheck_after_wait:
+                    return result
+            # A completed existing start or stop changes the state inspected
+            # above. Loop rather than returning a possibly cleaned runtime.
 
     async def _start_owner(self) -> Runtime:
         parts: dict[str, Any] = {}
@@ -452,7 +461,15 @@ class RuntimeController:
         if method is None:
             method = getattr(client, "close", None)
         if method is not None:
-            await self._safe_awaitable(method())
+            try:
+                await self._safe_awaitable(method())
+            except BaseException as error:  # noqa: BLE001 - cleanup continues
+                _LOGGER.warning("client close failed: %s", error)
+
+    @staticmethod
+    async def _wait_for_runtime_cleanup(runtime: Runtime) -> None:
+        async with runtime.cleanup_lock:
+            return
 
     async def _set_status(self, status: str) -> None:
         await self._safe_awaitable(self.window.set_status(status))

@@ -121,7 +121,7 @@ def test_pending_toggle_ignores_repeated_click_until_status_ack(window):
         ("listening", "● 正在监听", "暂停监听"),
         ("stopped", "已停止", "开始监听"),
         ("asr_error", "ASR 不可用", "开始监听"),
-        ("api_error", "API 错误", "开始监听"),
+        ("api_error", "API 错误", "暂停监听"),
         ("custom_status", "custom_status", None),
     ],
 )
@@ -132,6 +132,19 @@ def test_set_status_maps_labels_and_recovers_button(window, status, label, butto
     assert window.status_label.text() == label
     if button is not None:
         assert window.toggle_button.text() == button
+
+
+def test_api_error_keeps_active_listener_pause_control(window):
+    window.set_status("listening")
+    window.toggle_button.setEnabled(False)
+    window._pending_action = "stop"
+
+    window.set_status("api_error")
+
+    assert window._is_listening is True
+    assert window._pending_action is None
+    assert window.toggle_button.isEnabled()
+    assert window.toggle_button.text() == "暂停监听"
 
 
 def test_set_transcript_uses_placeholder_for_empty_text(window):
