@@ -8,9 +8,16 @@ import numpy as np
 
 from classbot.domain import TranscriptEvent
 
-_INPUT_QUEUE_SIZE = 32
-_EVENTS_END = object()
+_AUDIO_QUEUE_SIZE = 32
+_INPUT_QUEUE_SIZE = _AUDIO_QUEUE_SIZE + 1
 _FINISH = object()
+
+
+class _EventsEnd:
+    __slots__ = ("error",)
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
 
 
 def build_model(device: str) -> Any:
@@ -29,11 +36,17 @@ class FunAsrStreamingRecognizer:
         self._input_queue: asyncio.Queue[bytes | object] = asyncio.Queue(
             _INPUT_QUEUE_SIZE
         )
-        self._events_queue: asyncio.Queue[TranscriptEvent | object] = asyncio.Queue()
+        self._events_queue: asyncio.Queue[TranscriptEvent | _EventsEnd] = (
+            asyncio.Queue()
+        )
         self._model: Any | None = None
         self._worker: asyncio.Task[None] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._stopped = False
+        self._start_task: asyncio.Task[None] | None = None
+        self._stop_task: asyncio.Task[None] | None = None
+        self._model_load_task: asyncio.Task[Any] | None = None
+        self._inference_tasks: set[asyncio.Task[Any]] = set()
+        self._generation = 0
+        self._stopped = True
         self._events_closed = False
         self._worker_error: Exception | None = None
         self._residual = np.empty(0, dtype=np.float32)
@@ -41,37 +54,53 @@ class FunAsrStreamingRecognizer:
         self._last_text = ""
         self._segment_id = 0
         self._segment_samples = 0
+        self._closing = False
 
     async def start(self) -> None:
-        if self._worker is not None:
+        if self._stop_task is not None:
+            await self._await_cleanup_task(self._stop_task)
+
+        if self._worker is not None and not self._stopped:
             return
 
-        self._loop = asyncio.get_running_loop()
-        self._input_queue = asyncio.Queue(_INPUT_QUEUE_SIZE)
-        self._events_queue = asyncio.Queue()
-        self._events_closed = False
-        self._worker_error = None
-        self._stopped = False
+        if self._start_task is not None:
+            await asyncio.shield(self._start_task)
+            return
 
+        await self._wait_for_inference_tasks()
+        self._generation += 1
+        generation = self._generation
+        self._begin_session()
+
+        operation = asyncio.create_task(self._load_and_start(generation))
+        self._start_task = operation
         try:
-            self._model = await asyncio.to_thread(build_model, self.device)
-        except BaseException:
-            self._stopped = True
-            self._close_events()
+            await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            if self._start_task is operation:
+                self._generation += 1
+                self._stopped = True
+                self._close_events()
             raise
-
-        self._worker = asyncio.create_task(self._run_worker())
+        finally:
+            if operation.done() and self._start_task is operation:
+                self._start_task = None
 
     def push_audio(self, frame: bytes) -> None:
         self._ensure_running()
-        try:
-            self._input_queue.put_nowait(bytes(frame))
-        except asyncio.QueueFull:
+        if self._closing:
+            return
+
+        if self._input_queue.qsize() >= _AUDIO_QUEUE_SIZE:
             self._input_queue.get_nowait()
-            self._input_queue.put_nowait(bytes(frame))
+        self._input_queue.put_nowait(bytes(frame))
 
     def finish_segment(self) -> None:
         self._ensure_running()
+        if self._closing:
+            return
+
+        self._closing = True
         try:
             self._input_queue.put_nowait(_FINISH)
         except asyncio.QueueFull:
@@ -82,49 +111,133 @@ class FunAsrStreamingRecognizer:
         return self._event_stream()
 
     async def _event_stream(self) -> AsyncIterator[TranscriptEvent]:
+        queue = self._events_queue
         while True:
-            event = await self._events_queue.get()
-            if event is _EVENTS_END:
-                if self._worker_error is not None:
-                    raise self._worker_error
+            event = await queue.get()
+            if isinstance(event, _EventsEnd):
+                if event.error is not None:
+                    raise event.error
                 return
-            yield event  # type: ignore[misc]
+            yield event
 
     async def stop(self) -> None:
-        worker = self._worker
+        if self._stop_task is not None:
+            await self._await_cleanup_task(self._stop_task)
+            return
+
+        self._generation += 1
         self._stopped = True
+        worker = self._worker
+        start_task = self._start_task
+        cleanup = asyncio.create_task(self._complete_stop(worker, start_task))
+        self._stop_task = cleanup
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await asyncio.shield(cleanup)
+            raise
+        finally:
+            if cleanup.done() and self._stop_task is cleanup:
+                self._stop_task = None
 
-        if worker is not None and not worker.done():
-            worker.cancel()
+    async def _await_cleanup_task(self, task: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.shield(task)
+            raise
+
+    async def _load_and_start(self, generation: int) -> None:
+        operation = asyncio.current_task()
+        load_task = asyncio.create_task(asyncio.to_thread(build_model, self.device))
+        self._model_load_task = load_task
+        try:
             try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                if asyncio.current_task() is not None and asyncio.current_task().cancelling():
-                    self._close_events()
-                    raise
-                if not worker.cancelled():
-                    raise
+                model = await asyncio.shield(load_task)
+            finally:
+                if self._model_load_task is load_task:
+                    self._model_load_task = None
 
-        self._worker = None
-        self._close_events()
+            if not self._is_current_generation(generation):
+                return
+
+            self._model = model
+            self._worker = asyncio.create_task(self._run_worker(generation))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if self._is_current_generation(generation):
+                self._worker_error = error
+                self._stopped = True
+                self._close_events(error)
+            raise
+        finally:
+            if self._start_task is operation:
+                self._start_task = None
 
     def _ensure_running(self) -> None:
         if self._worker is None or self._stopped:
             raise RuntimeError("recognizer is not running")
 
-    async def _run_worker(self) -> None:
+    async def _complete_stop(
+        self,
+        worker: asyncio.Task[None] | None,
+        start_task: asyncio.Task[None] | None,
+    ) -> None:
+        if worker is not None:
+            if not worker.done():
+                worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                if not worker.cancelled():
+                    raise
+            except Exception as error:  # noqa: BLE001 - cleanup must continue
+                if self._worker_error is None:
+                    self._worker_error = error
+
+        if start_task is not None and not start_task.done():
+            try:
+                await start_task
+            except asyncio.CancelledError:
+                if not start_task.cancelled():
+                    raise
+            except Exception as error:  # noqa: BLE001 - cleanup must continue
+                if self._worker_error is None:
+                    self._worker_error = error
+
+        await self._wait_for_inference_tasks()
+
+        error = self._worker_error
+        self._worker = None
+        self._model = None
+        self._clear_queue(self._input_queue)
+        self._clear_queue(self._events_queue)
+        self._reset_transient_state()
+        self._events_closed = False
+        self._close_events(error)
+
+    async def _run_worker(self, generation: int) -> None:
+        current_task = asyncio.current_task()
         try:
             while True:
                 item = await self._input_queue.get()
                 if item is _FINISH:
                     await self._finish_current_segment()
+                    self._closing = False
                     continue
                 await self._consume_audio(item)  # type: ignore[arg-type]
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001 - worker errors must close events
-            self._worker_error = error
-            self._close_events()
+        except Exception as error:  # noqa: BLE001 - expose original worker error
+            if self._is_current_generation(generation):
+                self._worker_error = error
+                self._stopped = True
+                self._worker = None
+                self._close_events(error)
+        finally:
+            if self._worker is current_task:
+                self._worker = None
 
     async def _consume_audio(self, frame: bytes) -> None:
         samples = np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0
@@ -149,6 +262,10 @@ class FunAsrStreamingRecognizer:
             self._residual = np.empty(0, dtype=np.float32)
             self._segment_samples += int(residual.size)
             emitted = await self._infer(residual, is_final=True)
+        else:
+            emitted = await self._infer(
+                np.empty(0, dtype=np.float32), is_final=True
+            )
 
         if not emitted and self._last_text:
             self._emit_event(self._last_text, is_final=True)
@@ -163,15 +280,24 @@ class FunAsrStreamingRecognizer:
         if self._model is None:
             raise RuntimeError("ASR model is not loaded")
 
-        result = await asyncio.to_thread(
-            self._model.generate,
-            input=samples,
-            cache=self._cache,
-            is_final=is_final,
-            chunk_size=[0, 10, 5],
-            encoder_chunk_look_back=4,
-            decoder_chunk_look_back=1,
+        inference_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._model.generate,
+                input=samples,
+                cache=self._cache,
+                is_final=is_final,
+                chunk_size=[0, 10, 5],
+                encoder_chunk_look_back=4,
+                decoder_chunk_look_back=1,
+            )
         )
+        self._inference_tasks.add(inference_task)
+        inference_task.add_done_callback(self._inference_done)
+        try:
+            result = await asyncio.shield(inference_task)
+        finally:
+            if inference_task.done():
+                self._inference_tasks.discard(inference_task)
 
         emitted = False
         for text in _texts_from_result(result):
@@ -181,6 +307,11 @@ class FunAsrStreamingRecognizer:
             self._last_text = text
             emitted = True
         return emitted
+
+    def _inference_done(self, task: asyncio.Task[Any]) -> None:
+        self._inference_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
 
     def _emit_event(self, text: str, is_final: bool) -> None:
         elapsed_ms = int(self._segment_samples * 1000 / 16000)
@@ -195,10 +326,45 @@ class FunAsrStreamingRecognizer:
             )
         )
 
-    def _close_events(self) -> None:
+    def _begin_session(self) -> None:
+        self._input_queue = asyncio.Queue(_INPUT_QUEUE_SIZE)
+        self._events_queue = asyncio.Queue()
+        self._model = None
+        self._worker = None
+        self._events_closed = False
+        self._stopped = False
+        self._reset_transient_state()
+
+    def _reset_transient_state(self) -> None:
+        self._residual = np.empty(0, dtype=np.float32)
+        self._cache = {}
+        self._last_text = ""
+        self._segment_id = 0
+        self._segment_samples = 0
+        self._closing = False
+        self._worker_error = None
+
+    def _close_events(self, error: Exception | None = None) -> None:
         if not self._events_closed:
             self._events_closed = True
-            self._events_queue.put_nowait(_EVENTS_END)
+            self._events_queue.put_nowait(_EventsEnd(error))
+
+    async def _wait_for_inference_tasks(self) -> None:
+        while self._inference_tasks:
+            tasks = tuple(self._inference_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def _clear_queue(queue: asyncio.Queue[Any]) -> None:
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+    def _is_current_generation(self, generation: int) -> bool:
+        return generation == self._generation and not self._stopped
 
 
 def _texts_from_result(result: Any) -> Iterable[str]:
