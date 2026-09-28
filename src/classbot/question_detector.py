@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from uuid import uuid4
@@ -26,6 +26,7 @@ QUESTION_CLOSERS = frozenset(
     " \t\r\n\"'”’)]}>》」』）】〕〉〗〙〛｝»"
 )
 RECENT_EVENT_LIMIT = 128
+ACTIVE_SEGMENT_LIMIT = 16
 QUESTION_SCORE_THRESHOLD = 0.5
 
 
@@ -51,18 +52,16 @@ class QuestionDetector:
         self.subject = subject
         self.minimum_length = minimum_length
         self._fallback_segment_id: int | str = uuid4().hex
-        self._active_question: _ActiveQuestion | None = None
+        self._active_questions: OrderedDict[int | str, _ActiveQuestion] = OrderedDict()
         self._recent_events: deque[
             tuple[str, bool, int, int, int | str | None, bool]
         ] = deque(maxlen=RECENT_EVENT_LIMIT)
 
     def begin_segment(self, segment_id: int | str | None = None) -> None:
-        """Start a fresh segment and reset its active/deduplication state."""
+        """Switch the fallback identity without dropping other segment states."""
         self._fallback_segment_id = (
             segment_id if segment_id is not None else uuid4().hex
         )
-        self._active_question = None
-        self._recent_events.clear()
 
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
         """Return zero or one candidate for a transcript event."""
@@ -76,16 +75,21 @@ class QuestionDetector:
             segment_id,
             self._has_question_mark(event.text),
         )
+        confidence = self._score(event, normalized_text)
         if signature in self._recent_events:
+            if event.is_final and (
+                len(normalized_text) < self.minimum_length
+                or confidence < QUESTION_SCORE_THRESHOLD
+            ):
+                self._active_questions.pop(segment_id, None)
             return []
         self._recent_events.append(signature)
 
-        confidence = self._score(event, normalized_text)
         if len(normalized_text) < self.minimum_length or (
             confidence < QUESTION_SCORE_THRESHOLD
         ):
             if event.is_final:
-                self._active_question = None
+                self._active_questions.pop(segment_id, None)
             return []
 
         question_id = self._question_id_for(segment_id, normalized_text)
@@ -97,11 +101,14 @@ class QuestionDetector:
             is_final=event.is_final,
         )
 
-        self._active_question = _ActiveQuestion(
-            question_id=question_id,
-            normalized_text=normalized_text,
-            is_final=event.is_final,
-            segment_id=segment_id,
+        self._set_active_question(
+            segment_id,
+            _ActiveQuestion(
+                question_id=question_id,
+                normalized_text=normalized_text,
+                is_final=event.is_final,
+                segment_id=segment_id,
+            ),
         )
         return [candidate]
 
@@ -113,18 +120,22 @@ class QuestionDetector:
     def _question_id_for(
         self, segment_id: int | str, normalized_text: str
     ) -> str:
-        active = self._active_question
+        active = self._active_questions.get(segment_id)
         if (
             active is not None
-            and self._same_segment(active, segment_id)
             and self._same_question_text(active.normalized_text, normalized_text)
         ):
+            self._active_questions.move_to_end(segment_id)
             return active.question_id
         return uuid4().hex
 
-    @staticmethod
-    def _same_segment(active: _ActiveQuestion, segment_id: int | str) -> bool:
-        return active.segment_id == segment_id
+    def _set_active_question(
+        self, segment_id: int | str, active: _ActiveQuestion
+    ) -> None:
+        self._active_questions[segment_id] = active
+        self._active_questions.move_to_end(segment_id)
+        while len(self._active_questions) > ACTIVE_SEGMENT_LIMIT:
+            self._active_questions.popitem(last=False)
 
     @staticmethod
     def _same_question_text(previous: str, current: str) -> bool:

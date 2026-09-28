@@ -898,9 +898,10 @@ class FunAsrStreamingRecognizer:
                 self._audio.extend(data)
                 await self._infer_ready_chunks()
             elif kind == "finish":
+                emitted = False
                 if self._audio:
-                    await self._infer(bytes(self._audio), is_final=True)
-                elif self._last_text:
+                    emitted = await self._infer(bytes(self._audio), is_final=True)
+                if not emitted and self._last_text:
                     await self._output.put(
                         TranscriptEvent(
                             text=self._last_text,
@@ -924,9 +925,9 @@ class FunAsrStreamingRecognizer:
             del self._audio[:chunk_bytes]
             await self._infer(chunk, is_final=False)
 
-    async def _infer(self, data: bytes, is_final: bool) -> None:
+    async def _infer(self, data: bytes, is_final: bool) -> bool:
         if self._model is None:
-            return
+            return False
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         result = await asyncio.to_thread(
             self._model.generate,
@@ -938,19 +939,21 @@ class FunAsrStreamingRecognizer:
             decoder_chunk_look_back=1,
         )
         text = (result[0].get("text") if result else "") or ""
-        if text:
-            self._last_text = text
-            duration_ms = int(len(samples) / 16)
-            event = TranscriptEvent(
-                text=text,
-                is_final=is_final,
-                start_ms=self._segment_ms,
-                end_ms=self._segment_ms + duration_ms,
-                confidence=0.0,
-                segment_id=self._segment_id,
-            )
-            self._segment_ms += duration_ms
-            await self._output.put(event)
+        if not text:
+            return False
+        self._last_text = text
+        duration_ms = int(len(samples) / 16)
+        event = TranscriptEvent(
+            text=text,
+            is_final=is_final,
+            start_ms=self._segment_ms,
+            end_ms=self._segment_ms + duration_ms,
+            confidence=0.0,
+            segment_id=self._segment_id,
+        )
+        self._segment_ms += duration_ms
+        await self._output.put(event)
+        return True
 
     async def events(self) -> AsyncIterator[TranscriptEvent]:
         while self._running or not self._output.empty():
@@ -969,6 +972,8 @@ class FunAsrStreamingRecognizer:
 ```
 
 Create `src/classbot/audio/__init__.py` and `src/classbot/asr/__init__.py` as empty package markers. In `src/classbot/asr/__init__.py`, export `FunAsrStreamingRecognizer`.
+
+FunASR 产生的每个 `TranscriptEvent` 都必须携带当前递增的 `segment_id`；`start_ms` 和 `end_ms` 只表示段内时间元数据，不能作为段身份。`QuestionDetector.begin_segment(segment_id=None)` 只为没有显式 ID 的调用方切换 fallback identity，不得清理已有 per-segment active 状态或迟到事件的可复用状态。
 
 - [ ] **Step 6: 运行 mock 测试并修复接口细节**
 

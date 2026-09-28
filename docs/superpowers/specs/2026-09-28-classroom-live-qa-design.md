@@ -59,11 +59,11 @@ events() -> AsyncIterator[TranscriptEvent]
 stop() -> Awaitable[None]
 ```
 
-`TranscriptEvent` 至少包含：`text`、`is_final`、`start_ms`、`end_ms` 和 `confidence`。第一版提供基于 FunASR `paraformer-zh-streaming` 的本地实时中文 ASR 实现和 fake 实现；`finish_segment()` 将当前缓存标记为 final 并清理流式 cache。真实 ASR 的模型加载失败必须在 UI 中显示可诊断错误，而不是静默假装监听成功。实现参考：https://github.com/modelscope/FunASR/blob/main/examples/industrial_data_pretraining/paraformer/README.md
+`TranscriptEvent` 至少包含：`text`、`is_final`、`start_ms`、`end_ms`、`confidence` 和可选的 `segment_id`。真实 FunASR 事件始终提供递增 `segment_id`；时间字段只表示段内时序元数据。第一版提供基于 FunASR `paraformer-zh-streaming` 的本地实时中文 ASR 实现和 fake 实现；`finish_segment()` 将当前缓存标记为 final 并清理流式 cache。真实 ASR 的模型加载失败必须在 UI 中显示可诊断错误，而不是静默假装监听成功。实现参考：https://github.com/modelscope/FunASR/blob/main/examples/industrial_data_pretraining/paraformer/README.md
 
 ### 4.4 `QuestionDetector`
 
-问题检测器只处理文本，不依赖模型 API。它维护一个小状态机：`LISTENING`、`SPEAKING`、`CANDIDATE`、`SUBMITTED`、`COOLDOWN`。
+问题检测器只处理文本，不依赖模型 API。它维护一个小状态机：`LISTENING`、`SPEAKING`、`CANDIDATE`、`SUBMITTED`、`COOLDOWN`，并以有界的 per-segment active 状态保存异步到达的 partial/final 修订。
 
 候选分数由以下信号组成：
 
@@ -153,7 +153,7 @@ UI 线程不能直接执行音频读取、ASR 推理或网络请求；所有外�
 
 - `QuestionDetector` 对“马克思的生辰是什么”只生成一个候选，普通陈述“马克思出生于德国”不生成候选。
 - partial 文本逐字增长时，检测器不会在每个事件重复创建问题。
-- final 文本修正只会取消旧请求并生成一个新问题，不会出现两个相同卡片。
+- 同一 segment 的 final 文本修正沿用原 `question_id` 并更新候选，不会出现两个相同卡片。
 - fake DeepSeek SSE 分片 `“马”`、`“克思”`、`“出生于”`、`“1818 年。”` 能按顺序显示在同一张卡片中。
 - 网络错误、空回答和 API Key 错误会进入预期状态，音频采集任务不会因此崩溃。
 - 应用退出后，临时问题和回答不再存在；测试目录中不得生成音频文件。

@@ -75,6 +75,42 @@ def test_event_segment_id_takes_priority_over_fallback_identity():
     assert fallback.question_id != explicit.question_id
 
 
+def test_late_final_from_previous_segment_reuses_previous_question_id():
+    detector = QuestionDetector(subject="历史")
+    partial = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么",
+                is_final=False,
+                segment_id=1,
+            )
+        )
+    )
+
+    detector.begin_segment(segment_id=2)
+    new_segment = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么",
+                is_final=False,
+                segment_id=2,
+            )
+        )
+    )
+    late_final = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么？",
+                is_final=True,
+                segment_id=1,
+            )
+        )
+    )
+
+    assert new_segment.question_id != partial.question_id
+    assert late_final.question_id == partial.question_id
+
+
 def test_partial_question_triggers_before_final_transcript():
     detector = QuestionDetector(subject="历史")
 
