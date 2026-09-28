@@ -182,6 +182,15 @@ def test_update_answer_ignores_unknown_question_id(window):
     assert window.cards_list.count() == 0
 
 
+def test_answered_card_without_answer_shows_no_valid_short_answer(window):
+    window.upsert_card(make_card(status=CardStatus.ANSWERED))
+
+    rendered = window.cards_list.item(0).text()
+
+    assert "回答：未得到有效简答" in rendered
+    assert "等待回答…" not in rendered
+
+
 def test_error_card_renders_error_and_full_card_state(window):
     card = make_card(
         status=CardStatus.ERROR,

@@ -1359,93 +1359,17 @@ git commit -m "feat: add classroom floating answer window"
 - Create: `README.md`
 - Modify: `.env.example`
 
-- [ ] **Step 1: 写启动入口，明确依赖组装顺序**
+- [ ] **Step 1: 写启动入口，明确可重启 runtime 契约**
 
-`main.py` must construct these objects in order: `Settings` → `MainWindow` → `AudioCapture` → `SpeechSegmenter` → `FunAsrStreamingRecognizer` → `QuestionDetector` → `DeepSeekClient` → `LivePipeline`. The audio loop must call `detector.begin_segment()` when `SpeechSegmenter.accept(frame).speech_started` is true, call `recognizer.push_audio(frame)` for every frame, and call `recognizer.finish_segment()` when `speech_ended` is true. `start_ms` and `end_ms` are timing metadata only and must not be used as a segment identity.
+`main.py` must construct `Settings`, `QApplication`/`QEventLoop`, and `MainWindow` once. It must not construct `AudioCapture`, `SpeechSegmenter`, `FunAsrStreamingRecognizer`, `QuestionDetector`, `DeepSeekClient`, or `LivePipeline` at module scope or once for the lifetime of the window. A stopped pipeline, capture, ASR recognizer, detector, or client is never reusable.
 
-Implement the qasync entry point as:
+Every accepted `start_requested` must create a fresh runtime containing, in this order, a new `AudioCapture`, `SpeechSegmenter`, `FunAsrStreamingRecognizer`, `QuestionDetector`, `DeepSeekClient`, and `LivePipeline`. Store that runtime (including its audio/pipeline tasks) as the current runtime. The audio loop must call `detector.begin_segment()` when `SpeechSegmenter.accept(frame).speech_started` is true, call `recognizer.push_audio(frame)` for every frame, and call `recognizer.finish_segment()` when `speech_ended` is true. `start_ms` and `end_ms` are timing metadata only and must not be used as a segment identity.
 
-```python
-# src/classbot/main.py
-from __future__ import annotations
+The start/stop callbacks are asynchronous qasync tasks. A start task must await `pipeline.prepare()` before starting audio and `pipeline.run()`. If prepare or model loading fails, it must clean up that partially-created runtime, clear the current-runtime reference, and call `window.set_status("asr_error")`; this explicit error ack releases the UI pending state. On successful startup, the main layer must not optimistically call `window.set_status("listening")`: the running pipeline's `listening` callback is the ack. Likewise, a successful pipeline stop must publish `stopped` through the same `on_status=window.set_status` callback so the UI can re-enable the button.
 
-import asyncio
-import sys
+`stop_requested` and `close_requested` must both schedule the same asynchronous cleanup operation. Cleanup must stop the current `AudioCapture`, cancel/await its audio task, await `pipeline.stop()`, await `client.aclose()`, and then clear the current-runtime reference; it must be safe when no runtime exists and must not create a replacement runtime. If a new start is requested while cleanup is still finishing, it must await the cleanup task before constructing the next fresh runtime. `close_requested` must be connected to this async cleanup path; do not perform async cleanup directly inside the Qt UI callback or `MainWindow`.
 
-from PySide6.QtWidgets import QApplication
-from qasync import QEventLoop
-
-from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
-from classbot.audio.capture import AudioCapture
-from classbot.audio.segmenter import SpeechSegmenter
-from classbot.config import Settings
-from classbot.llm.deepseek_client import DeepSeekClient
-from classbot.pipeline import LivePipeline
-from classbot.question_detector import QuestionDetector
-from classbot.ui.main_window import MainWindow
-
-
-async def run_app(window: MainWindow, pipeline: LivePipeline, capture: AudioCapture, segmenter: SpeechSegmenter) -> None:
-    async def feed_audio() -> None:
-        capture.start()
-        async for frame in capture.frames():
-            recognizer = pipeline.recognizer
-            recognizer.push_audio(frame)
-            segment_event = segmenter.accept(frame)
-            if segment_event.speech_started:
-                pipeline.detector.begin_segment()
-            if segment_event.speech_ended:
-                recognizer.finish_segment()
-
-    audio_task: asyncio.Task | None = None
-
-    async def start() -> None:
-        nonlocal audio_task
-        if audio_task is None or audio_task.done():
-            try:
-                await pipeline.prepare()
-            except Exception:
-                window.set_status("asr_error")
-                return
-            audio_task = asyncio.create_task(feed_audio())
-            asyncio.create_task(pipeline.run())
-
-    def stop() -> None:
-        capture.stop()
-        asyncio.create_task(pipeline.stop())
-
-    window.start_requested.connect(lambda: asyncio.create_task(start()))
-    window.stop_requested.connect(stop)
-    window.show()
-
-
-def main() -> None:
-    settings = Settings.from_env()
-    app = QApplication(sys.argv)
-    loop = QEventLoop(app)
-    asyncio.set_event_loop(loop)
-    window = MainWindow(settings.subject)
-    capture = AudioCapture()
-    segmenter = SpeechSegmenter()
-    recognizer = FunAsrStreamingRecognizer(device=settings.asr_device)
-    detector = QuestionDetector(settings.subject)
-    client = DeepSeekClient(settings)
-    pipeline = LivePipeline(
-        recognizer=recognizer,
-        detector=detector,
-        client=client,
-        on_card=window.upsert_card,
-        on_delta=window.update_answer,
-        on_status=window.set_status,
-    )
-    with loop:
-        loop.run_until_complete(run_app(window, pipeline, capture, segmenter))
-        loop.run_forever()
-
-
-if __name__ == "__main__":
-    main()
-```
+The implementation may represent the contract with a small runtime dataclass or equivalent mapping, but every callback must close over the current runtime's own capture, segmenter, recognizer, detector, client, and pipeline. This prevents a later start from feeding frames into, or receiving status from, an already-stopped runtime.
 
 Create the module entry point required by the README command:
 
@@ -1458,7 +1382,7 @@ if __name__ == "__main__":
     main()
 ```
 
-The `on_delta` binding above receives the full accumulated answer and calls `window.update_answer`, so the initial text is replaced idempotently on every streamed update. Do not append raw token deltas directly to the list item.
+The runtime's `on_delta` binding must receive the full accumulated answer and call `window.update_answer`, so the initial text is replaced idempotently on every streamed update. Do not append raw token deltas directly to the list item.
 
 - [ ] **Step 2: 加入 README 的真实安装和安全说明**
 

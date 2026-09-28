@@ -110,6 +110,8 @@ class MainWindow(QMainWindow):
             answer = card.answer
         elif card.status == CardStatus.ERROR:
             answer = "回答失败"
+        elif card.status == CardStatus.ANSWERED:
+            answer = "未得到有效简答"
         else:
             answer = "等待回答…"
         status = getattr(card.status, "value", str(card.status))
