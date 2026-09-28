@@ -52,11 +52,11 @@
 定义与具体 ASR 无关的接口：
 
 ```text
-start() -> None
+start() -> Awaitable[None]
 push_audio(frame: bytes) -> None
 finish_segment() -> None
 events() -> AsyncIterator[TranscriptEvent]
-stop() -> None
+stop() -> Awaitable[None]
 ```
 
 `TranscriptEvent` 至少包含：`text`、`is_final`、`start_ms`、`end_ms` 和 `confidence`。第一版提供基于 FunASR `paraformer-zh-streaming` 的本地实时中文 ASR 实现和 fake 实现；`finish_segment()` 将当前缓存标记为 final 并清理流式 cache。真实 ASR 的模型加载失败必须在 UI 中显示可诊断错误，而不是静默假装监听成功。实现参考：https://github.com/modelscope/FunASR/blob/main/examples/industrial_data_pretraining/paraformer/README.md
