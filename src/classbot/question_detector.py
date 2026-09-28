@@ -22,6 +22,9 @@ STRONG_QUESTION_MARKERS = (
 )
 QUESTION_PARTICLES = ("吗", "呢")
 QUESTION_MARKS = ("?", "？")
+QUESTION_CLOSERS = frozenset(
+    " \t\r\n\"'”’)]}>》」』）】〕〉〗〙〛｝»"
+)
 RECENT_EVENT_LIMIT = 128
 QUESTION_SCORE_THRESHOLD = 0.5
 
@@ -64,8 +67,6 @@ class QuestionDetector:
             self._has_question_mark(event.text),
         )
         if signature in self._recent_events:
-            if event.is_final:
-                self._active_question = None
             return []
         self._recent_events.append(signature)
 
@@ -86,15 +87,12 @@ class QuestionDetector:
             is_final=event.is_final,
         )
 
-        if event.is_final:
-            self._active_question = None
-        else:
-            self._active_question = _ActiveQuestion(
-                question_id=question_id,
-                normalized_text=normalized_text,
-                is_final=False,
-                segment_id=event.segment_id,
-            )
+        self._active_question = _ActiveQuestion(
+            question_id=question_id,
+            normalized_text=normalized_text,
+            is_final=event.is_final,
+            segment_id=event.segment_id,
+        )
         return [candidate]
 
     def _question_id_for(self, event: TranscriptEvent, normalized_text: str) -> str:
@@ -155,4 +153,7 @@ class QuestionDetector:
 
     @staticmethod
     def _has_question_mark(raw_text: str) -> bool:
-        return any(mark in raw_text for mark in QUESTION_MARKS)
+        text = raw_text.rstrip()
+        while text and text[-1] in QUESTION_CLOSERS:
+            text = text[:-1].rstrip()
+        return text.endswith(QUESTION_MARKS)

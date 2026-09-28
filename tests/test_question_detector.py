@@ -167,7 +167,7 @@ def test_identical_final_event_is_emitted_only_once():
 
 def test_late_question_mark_final_revision_is_not_deduplicated():
     detector = QuestionDetector(subject="历史")
-    _one(
+    first = _one(
         detector.feed(
             TranscriptEvent(
                 text="马克思的生辰是什么",
@@ -190,8 +190,47 @@ def test_late_question_mark_final_revision_is_not_deduplicated():
         )
     )
 
+    assert revised.question_id == first.question_id
     assert revised.text == normalize_text("马克思的生辰是什么？")
     assert revised.is_final is True
+
+    new_segment = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="马克思的生辰是什么？",
+                is_final=True,
+                start_ms=100,
+                end_ms=120,
+                segment_id="segment-2",
+            )
+        )
+    )
+
+    assert new_segment.question_id != first.question_id
+
+
+def test_embedded_question_mark_inside_quote_does_not_trigger():
+    detector = QuestionDetector(subject="历史")
+
+    candidates = detector.feed(
+        TranscriptEvent(
+            text="老师问‘马克思是谁？’然后继续讲",
+            is_final=False,
+        )
+    )
+
+    assert candidates == []
+
+
+def test_sentence_final_question_mark_triggers_candidate():
+    detector = QuestionDetector(subject="历史")
+
+    candidates = detector.feed(
+        TranscriptEvent(text="马克思的生辰是什么？）", is_final=True)
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].is_final is True
 
 
 def test_segment_id_change_creates_new_id_even_when_times_reset():
