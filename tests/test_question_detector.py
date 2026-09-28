@@ -125,6 +125,17 @@ def test_partial_question_triggers_before_final_transcript():
     assert 0 <= candidate.confidence <= 1
 
 
+def test_qingwen_question_triggers_candidate():
+    detector = QuestionDetector(subject="历史")
+
+    candidates = detector.feed(
+        TranscriptEvent(text="请问马克思的生辰", is_final=False)
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "请问马克思的生辰"
+
+
 def test_growing_partial_transcript_with_same_segment_id_reuses_question_id():
     detector = QuestionDetector(subject="历史")
     first = _one(

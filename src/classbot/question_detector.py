@@ -19,6 +19,7 @@ STRONG_QUESTION_MARKERS = (
     "怎么",
     "多少",
     "是否",
+    "请问",
 )
 QUESTION_PARTICLES = ("吗", "呢")
 QUESTION_MARKS = ("?", "？")
