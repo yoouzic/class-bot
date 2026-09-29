@@ -11,6 +11,7 @@ def clear_classbot_environment(monkeypatch):
         "CLASSBOT_MODEL",
         "CLASSBOT_BASE_URL",
         "CLASSBOT_ASR_DEVICE",
+        "CLASSBOT_THINKING",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("classbot.config.load_dotenv", lambda: None)
@@ -26,6 +27,7 @@ def test_from_env_reads_config_values(monkeypatch):
     assert settings.subject == "历史"
     assert settings.model == "deepseek-flash"
     assert settings.base_url == "https://api.deepseek.com"
+    assert settings.thinking_effort == "none"
 
 
 def test_from_env_returns_none_when_api_key_is_missing(monkeypatch):
@@ -34,3 +36,11 @@ def test_from_env_returns_none_when_api_key_is_missing(monkeypatch):
     settings = Settings.from_env()
 
     assert settings.deepseek_api_key is None
+
+
+def test_from_env_reads_low_thinking_effort(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_THINKING", "low")
+
+    settings = Settings.from_env()
+
+    assert settings.thinking_effort == "low"

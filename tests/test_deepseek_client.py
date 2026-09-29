@@ -4,7 +4,9 @@ import json
 import httpx
 import pytest
 
+import classbot.llm.deepseek_client as deepseek_module
 from classbot.config import Settings
+from classbot.course import CourseProfile
 from classbot.llm.deepseek_client import DeepSeekClient, DeepSeekStreamError
 
 
@@ -47,6 +49,8 @@ async def test_stream_answer_sends_request_contract_and_yields_sse_content():
         ]
         assert "1～3句" in payload["messages"][0]["content"]
         assert "不输出推理" in payload["messages"][0]["content"]
+        assert "结合课程领域做最小纠错" in payload["messages"][0]["content"]
+        assert "不要跨学科联想" in payload["messages"][0]["content"]
         assert "学科：历史" in payload["messages"][1]["content"]
         assert "马克思出生于哪一年？" in payload["messages"][1]["content"]
 
@@ -81,6 +85,84 @@ async def test_stream_answer_sends_request_contract_and_yields_sse_content():
         ]
 
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_answer_can_enable_low_thinking_effort():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "low"
+        assert "temperature" not in payload
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "简短回答"}}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = Settings(
+        deepseek_api_key="test-key",
+        subject="马克思主义基本原理",
+        model="deepseek-flash",
+        base_url="https://api.deepseek.example",
+        asr_device="cpu",
+        thinking_effort="low",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "物质和意识的关系是什么？", settings.subject) == [
+            "简短回答"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_stream_answer_includes_relevant_textbook_reference(monkeypatch):
+    profile = CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第2页] 物质决定意识，意识对物质具有能动的反作用。",
+            "[第8页] 商品的价值由社会必要劳动时间决定。",
+        ),
+    )
+    monkeypatch.setenv("CLASSBOT_COURSE", "demo")
+    monkeypatch.setattr(
+        deepseek_module, "load_course_profile", lambda _course_id: profile
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "high"
+        assert payload["max_tokens"] == 512
+        user_message = payload["messages"][1]["content"]
+        assert "教材参考" in user_message
+        assert "物质决定意识，意识对物质具有能动的反作用" in user_message
+        assert "商品的价值由社会必要劳动时间决定" not in user_message
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "简短回答"}}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = Settings(
+        deepseek_api_key="test-key",
+        subject="马克思主义基本原理",
+        model="deepseek-flash",
+        base_url="https://api.deepseek.example",
+        asr_device="cpu",
+        thinking_effort="high",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "物质和意识的关系是什么？", settings.subject) == [
+            "简短回答"
+        ]
 
 
 @pytest.mark.asyncio

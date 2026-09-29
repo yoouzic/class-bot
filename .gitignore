@@ -12,6 +12,10 @@ __pycache__/
 logs/
 models/
 .model_cache/
+tmp/
+*.pdf
+*.m4a
+courses/*/reference.txt
 dist/
 build/
 *.egg-info/

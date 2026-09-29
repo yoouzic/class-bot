@@ -207,6 +207,43 @@ async def test_long_segment_is_refined_with_full_final_decode(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_final_refinement_passes_course_hotwords_and_corrections(monkeypatch):
+    class CourseAwareModel:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["is_final"] and kwargs["input"].size > 160:
+                return [{"text": "主观违心主义"}]
+            return [{"text": "实时片段" if not kwargs["is_final"] else ""}]
+
+    model = CourseAwareModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        hotwords=("主观唯心主义",),
+        corrections={"违心": "唯心"},
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    await _next_event(events)
+
+    final_call = model.calls[-1]
+    assert final_call["hotword"] == "主观唯心主义"
+    assert final_call["postprocess_hotwords"] == {"违心": "唯心"}
+    assert final_call["postprocess_hotword_fuzzy"] is False
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_reliably_ends_events(monkeypatch):
     model = FakeModel([])
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)

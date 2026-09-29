@@ -19,7 +19,9 @@ Create `.env` from `.env.example` and set at least:
 
 ```dotenv
 DEEPSEEK_API_KEY=your-api-key
-CLASSBOT_SUBJECT=历史
+CLASSBOT_SUBJECT=马克思主义基本原理
+CLASSBOT_COURSE=marxism_basic_principles_2023
+CLASSBOT_THINKING=high
 ```
 
 Start the application with:
@@ -39,6 +41,16 @@ retains the recent question history. Explicit classroom vocatives are removed
 from answer prompts, while long lecture scaffolding without a question ending
 is filtered before an API request. Repeated questions from different speech
 segments are intentionally kept.
+
+Course-specific profiles live under `courses/`. Each profile can provide
+`hotwords.txt`, `corrections.txt` for recognition fixes, and an optional local
+`reference.txt` containing textbook excerpts. `CLASSBOT_COURSE` selects the
+profile, so different courses can use different terminology and textbook
+context without changing the source code.
+`CLASSBOT_THINKING=high` enables a higher-effort DeepSeek reasoning pass. When a
+question matches the local textbook index, the relevant excerpts are sent with
+the question so the answer prioritizes the book's terminology and conclusions.
+The PDF and generated reference index are ignored by Git and stay local.
 
 The first startup downloads the `paraformer-zh-streaming` ASR model and can
 take a while. Obtain appropriate classroom consent before using the app.

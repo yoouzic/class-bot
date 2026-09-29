@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import Any
 
 import numpy as np
@@ -30,12 +30,26 @@ def build_model(device: str) -> Any:
 
 
 class FunAsrStreamingRecognizer:
-    def __init__(self, device: str = "cpu", chunk_samples: int = 9600):
+    def __init__(
+        self,
+        device: str = "cpu",
+        chunk_samples: int = 9600,
+        hotwords: Iterable[str] = (),
+        corrections: Mapping[str, str] | None = None,
+    ):
         if chunk_samples <= 0:
             raise ValueError("chunk_samples must be positive")
 
         self.device = device
         self.chunk_samples = chunk_samples
+        self.hotwords = tuple(
+            word.strip() for word in hotwords if str(word).strip()
+        )
+        self.corrections = {
+            str(wrong).strip(): str(right).strip()
+            for wrong, right in (corrections or {}).items()
+            if str(wrong).strip() and str(right).strip()
+        }
         self._input_queue: asyncio.Queue[bytes | object] = asyncio.Queue(
             _INPUT_QUEUE_SIZE
         )
@@ -323,6 +337,7 @@ class FunAsrStreamingRecognizer:
                 chunk_size=[0, 10, 5],
                 encoder_chunk_look_back=4,
                 decoder_chunk_look_back=1,
+                **self._postprocess_kwargs(final_refinement=False),
             )
         )
         self._inference_tasks.add(inference_task)
@@ -364,6 +379,7 @@ class FunAsrStreamingRecognizer:
                 chunk_size=[0, 10, 5],
                 encoder_chunk_look_back=4,
                 decoder_chunk_look_back=1,
+                **self._postprocess_kwargs(final_refinement=True),
             )
         )
         self._inference_tasks.add(inference_task)
@@ -383,6 +399,20 @@ class FunAsrStreamingRecognizer:
             text for text in _texts_from_result(result) if text.strip()
         )
         return refined_text.strip()
+
+    def _postprocess_kwargs(self, *, final_refinement: bool) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        if self.hotwords:
+            options["hotword"] = " ".join(self.hotwords)
+
+        if final_refinement:
+            if self.corrections:
+                options["postprocess_hotwords"] = dict(self.corrections)
+                options["postprocess_hotword_fuzzy"] = False
+        elif self.corrections:
+            options["postprocess_hotwords"] = dict(self.corrections)
+            options["postprocess_hotword_fuzzy"] = False
+        return options
 
     def _inference_done(self, task: asyncio.Task[Any]) -> None:
         self._inference_tasks.discard(task)

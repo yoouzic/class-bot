@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import os
 import sys
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,7 @@ from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
 from classbot.audio.capture import AudioCapture, AudioCaptureError
 from classbot.audio.segmenter import SpeechSegmenter
 from classbot.config import Settings
+from classbot.course import load_course_profile
 from classbot.llm.deepseek_client import DeepSeekClient
 from classbot.pipeline import LivePipeline
 from classbot.question_detector import QuestionDetector
@@ -25,7 +27,12 @@ Factory = Callable[..., Any]
 
 
 def _make_recognizer(device: str) -> FunAsrStreamingRecognizer:
-    return FunAsrStreamingRecognizer(device=device)
+    profile = load_course_profile(os.getenv("CLASSBOT_COURSE", ""))
+    return FunAsrStreamingRecognizer(
+        device=device,
+        hotwords=profile.hotwords,
+        corrections=profile.corrections,
+    )
 
 
 def _make_detector(subject: str) -> QuestionDetector:

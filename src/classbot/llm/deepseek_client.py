@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -10,10 +11,13 @@ from math import isfinite
 import httpx
 
 from classbot.config import Settings
+from classbot.course import CourseProfile, load_course_profile
 
 _SYSTEM_PROMPT = (
     "你是一个课堂问答助手。只输出直接、准确、简短的中文答案（1～3句），"
     "不输出推理、寒暄、标题或代码块；不确定时明确说不确定。"
+    "问题可能来自语音识别，结合课程领域做最小纠错；不要跨学科联想，"
+    "不要把猜测写成事实。优先先给教材中的结论，再补一句必要解释。"
 )
 _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 1.0
 _MAX_RATE_LIMIT_COOLDOWN_SECONDS = 30.0
@@ -44,6 +48,14 @@ class DeepSeekClient:
             self._http_client = http_client
             self._owns_http_client = False
         self._rate_limit_until = 0.0
+        try:
+            self._course_profile = load_course_profile(
+                os.getenv("CLASSBOT_COURSE", "")
+            )
+        except (FileNotFoundError, ValueError):
+            # ASR profile loading remains strict in ``main``.  The answer
+            # client should still work without optional textbook context.
+            self._course_profile = CourseProfile("")
 
     async def aclose(self) -> None:
         if self._owns_http_client:
@@ -62,20 +74,36 @@ class DeepSeekClient:
                 f"retry in {remaining_cooldown:.1f}s"
             )
 
+        thinking_enabled = self._settings.thinking_effort != "none"
+        references = self._course_profile.find_reference(question, limit=3)
+        user_content = f"学科：{subject}\n问题：{question}"
+        if references:
+            reference_text = "\n".join(references)
+            user_content += (
+                "\n\n教材参考（优先依据其中的术语和结论；"
+                "只保留必要的原文表述，不要整段照抄，也不要伪造教材未提供的引文）：\n"
+                + reference_text[:4000]
+            )
+
         payload = {
             "model": self._settings.model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": f"学科：{subject}\n问题：{question}",
+                    "content": user_content,
                 },
             ],
             "stream": True,
-            "thinking": {"type": "disabled"},
-            "temperature": 0.2,
-            "max_tokens": 120,
+            "thinking": {
+                "type": "enabled" if thinking_enabled else "disabled"
+            },
+            "max_tokens": 512 if thinking_enabled else 120,
         }
+        if thinking_enabled:
+            payload["reasoning_effort"] = self._settings.thinking_effort
+        else:
+            payload["temperature"] = 0.2
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Accept": "text/event-stream",
