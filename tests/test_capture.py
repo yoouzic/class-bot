@@ -56,6 +56,104 @@ async def test_fake_stream_callback_and_stop_wake_frames(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_default_device_falls_back_to_native_16khz_input(monkeypatch):
+    attempts = []
+
+    class DeviceAwareStream(FakeStream):
+        def __init__(self, **kwargs):
+            attempts.append(kwargs["device"])
+            if kwargs["device"] is None:
+                raise OSError("invalid sample rate")
+            super().__init__(**kwargs)
+
+    devices = [
+        {
+            "index": 1,
+            "max_input_channels": 4,
+            "default_samplerate": 44100.0,
+        },
+        {
+            "index": 20,
+            "max_input_channels": 4,
+            "default_samplerate": 16000.0,
+        },
+        {
+            "index": 30,
+            "max_input_channels": 0,
+            "default_samplerate": 16000.0,
+        },
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(
+            RawInputStream=DeviceAwareStream,
+            query_devices=lambda: devices,
+        ),
+    )
+
+    capture = AudioCapture()
+    capture.start()
+
+    assert attempts == [None, 20]
+    assert capture._active_device == 20
+    capture.stop()
+
+
+@pytest.mark.asyncio
+async def test_capture_supports_sounddevice_without_start_constructor_argument(
+    monkeypatch,
+):
+    class StrictStream:
+        instance = None
+
+        def __init__(
+            self,
+            *,
+            samplerate,
+            blocksize,
+            channels,
+            dtype,
+            device,
+            callback,
+        ):
+            self.kwargs = {
+                "samplerate": samplerate,
+                "blocksize": blocksize,
+                "channels": channels,
+                "dtype": dtype,
+                "device": device,
+                "callback": callback,
+            }
+            self.started = False
+            self.stopped = False
+            self.closed = False
+            self.__class__.instance = self
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        types.SimpleNamespace(RawInputStream=StrictStream),
+    )
+
+    capture = AudioCapture(device=3)
+    capture.start()
+
+    assert StrictStream.instance.started is True
+    capture.stop()
+    assert StrictStream.instance.closed is True
+
+
+@pytest.mark.asyncio
 async def test_callback_status_raises_audio_capture_error(monkeypatch):
     monkeypatch.setitem(
         sys.modules,

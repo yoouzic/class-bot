@@ -31,6 +31,7 @@ class AudioCapture:
         self._queue: asyncio.Queue[bytes | object] = asyncio.Queue(_QUEUE_SIZE)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream: Any | None = None
+        self._active_device: int | None = None
         self._session_token: object | None = None
         self._stopped = False
 
@@ -46,34 +47,82 @@ class AudioCapture:
         self._session_token = token
         self._stopped = False
 
-        stream: Any | None = None
         try:
             import sounddevice as sd
 
             callback = self._make_callback(token, queue, loop)
-            stream = sd.RawInputStream(
-                samplerate=self.sample_rate,
-                blocksize=self.blocksize,
-                channels=1,
-                dtype="int16",
-                device=self.device,
-                callback=callback,
-                start=False,
-            )
-            self._stream = stream
-            stream.start()
+            errors: list[tuple[int | None, Exception]] = []
+            for device in self._candidate_devices(sd):
+                stream: Any | None = None
+                try:
+                    stream = sd.RawInputStream(
+                        samplerate=self.sample_rate,
+                        blocksize=self.blocksize,
+                        channels=1,
+                        dtype="int16",
+                        device=device,
+                        callback=callback,
+                    )
+                    stream.start()
+                except Exception as error:  # noqa: BLE001
+                    errors.append((device, error))
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception as close_error:  # noqa: BLE001
+                            _LOGGER.debug(
+                                "microphone stream close after open failure failed: %s",
+                                close_error,
+                            )
+                    continue
+
+                self._stream = stream
+                self._active_device = device
+                return
+
+            if errors:
+                device, error = errors[-1]
+                raise AudioCaptureError(
+                    f"microphone open failed for devices "
+                    f"{[candidate for candidate, _ in errors]}: {error}"
+                ) from error
+            raise AudioCaptureError("microphone open failed: no input device")
         except Exception as error:
             self._stream = None
+            self._active_device = None
             self._session_token = None
-            if stream is not None:
-                try:
-                    stream.close()
-                except Exception as close_error:  # noqa: BLE001
-                    _LOGGER.debug(
-                        "microphone stream close after open failure failed: %s",
-                        close_error,
-                    )
+            if isinstance(error, AudioCaptureError):
+                raise
             raise AudioCaptureError(f"microphone open failed: {error}") from error
+
+    def _candidate_devices(self, sounddevice: Any) -> list[int | None]:
+        if self.device is not None:
+            return [self.device]
+
+        candidates: list[int | None] = [None]
+        try:
+            devices = sounddevice.query_devices()
+        except Exception as error:  # noqa: BLE001
+            _LOGGER.debug("querying microphone devices failed: %s", error)
+            return candidates
+
+        ranked: list[tuple[int, int]] = []
+        for position, info in enumerate(devices):
+            try:
+                if int(info.get("max_input_channels", 0)) < 1:
+                    continue
+                index = int(info.get("index", position))
+                default_rate = float(info.get("default_samplerate", 0) or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+            native_rate_priority = 0 if abs(default_rate - self.sample_rate) < 1 else 1
+            ranked.append((native_rate_priority, index))
+
+        for _priority, index in sorted(ranked):
+            if index not in candidates:
+                candidates.append(index)
+        return candidates
 
     def _make_callback(
         self,
@@ -96,9 +145,7 @@ class AudioCapture:
                 return
 
             frame = bytes(indata)
-            loop.call_soon_threadsafe(
-                self._enqueue_frame, token, queue, frame
-            )
+            loop.call_soon_threadsafe(self._enqueue_frame, token, queue, frame)
 
         return callback
 
@@ -179,6 +226,7 @@ class AudioCapture:
         queue = self._queue
         stream = self._stream
         self._stream = None
+        self._active_device = None
 
         try:
             if stream is not None:
