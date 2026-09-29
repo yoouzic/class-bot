@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from uuid import uuid4
@@ -19,9 +20,76 @@ STRONG_QUESTION_MARKERS = (
     "多少",
     "是否",
     "请问",
+    "有没有",
+    "是不是",
+    "能不能",
+    "可不可以",
+    "什么是",
+    "啥意思",
+    "什么意思",
+    "对不对",
+    "记不记得",
 )
 QUESTION_PARTICLES = ("吗", "呢")
 QUESTION_MARKS = ("?", "？")
+QUESTION_ENDINGS = (
+    "吗",
+    "呢",
+    "呀",
+    "啊",
+    "吧",
+    "对吧",
+    "记不记得",
+    "有没有",
+    "是不是",
+    "能不能",
+    "可不可以",
+    "什么",
+    "哪个",
+    "哪一个",
+    "谁",
+    "为什么",
+    "为何",
+    "如何",
+    "怎么",
+    "多少",
+    "是否",
+)
+NARRATIVE_CUES = (
+    "现在打开教材",
+    "打开教材",
+    "看一下",
+    "我们来看看",
+    "我们接着",
+    "接着呢",
+    "接着看",
+    "接着来看",
+    "接下来",
+    "大家注意",
+    "大家一定",
+    "牢牢记住",
+    "回顾一下",
+    "重新回顾",
+    "我们学习了",
+    "学习了",
+    "我们了解了",
+    "了解一下",
+    "只需要掌握",
+    "这个大家",
+    "最后一点",
+    "首先",
+    "其次",
+    "然后呢",
+    "也就是说",
+    "答案不在",
+    "刚刚已经",
+    "具体来说",
+    "来看一下",
+)
+_VOCATIVE_PREFIX = re.compile(
+    r"^(?:各位(?:同学|同学们)?|大家(?:好)?|同学们?|老师)"
+    r"[\s,，:：、—-]*"
+)
 NARRATIVE_PREFIX_ENDINGS = (
     "解释",
     "说明",
@@ -61,6 +129,11 @@ def normalize_text(text: str) -> str:
     return "".join(character for character in text if character.isalnum())
 
 
+def clean_question_text(text: str) -> str:
+    """Remove only explicit vocatives before normalizing question text."""
+    return normalize_text(_VOCATIVE_PREFIX.sub("", text.strip()))
+
+
 class QuestionDetector:
     """Detect local question candidates and track one active speech segment."""
 
@@ -81,7 +154,7 @@ class QuestionDetector:
 
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
         """Return zero or one candidate for a transcript event."""
-        normalized_text = normalize_text(event.text)
+        normalized_text = clean_question_text(event.text)
         segment_id = self._segment_id_for(event)
         signature = (
             normalized_text,
@@ -100,6 +173,11 @@ class QuestionDetector:
                 self._active_questions.pop(segment_id, None)
             return []
         self._recent_events.append(signature)
+
+        if self._is_context_noise(event.text, normalized_text):
+            if event.is_final:
+                self._active_questions.pop(segment_id, None)
+            return []
 
         if len(normalized_text) < self.minimum_length or (
             confidence < QUESTION_SCORE_THRESHOLD
@@ -174,6 +252,20 @@ class QuestionDetector:
         if event.is_final:
             score += 0.1
         return min(score, 1.0)
+
+    @classmethod
+    def _is_context_noise(cls, raw_text: str, normalized_text: str) -> bool:
+        if len(normalized_text) < 16:
+            return False
+        if cls._has_question_ending(raw_text, normalized_text):
+            return False
+        return any(cue in raw_text or cue in normalized_text for cue in NARRATIVE_CUES)
+
+    @classmethod
+    def _has_question_ending(cls, raw_text: str, normalized_text: str) -> bool:
+        if cls._has_question_mark(raw_text):
+            return True
+        return any(normalized_text.endswith(ending) for ending in QUESTION_ENDINGS)
 
     @staticmethod
     def _has_strong_marker(normalized_text: str) -> bool:

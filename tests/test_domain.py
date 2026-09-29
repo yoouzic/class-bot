@@ -24,9 +24,11 @@ def test_domain_types_construct_valid_values():
         question_id=candidate.question_id,
         question=candidate.text,
         subject=candidate.subject,
+        timestamp_ms=1234,
     )
 
     assert card.status is CardStatus.DETECTED
+    assert card.timestamp_ms == 1234
 
 
 def test_transcript_event_accepts_explicit_segment_id():
@@ -74,7 +76,10 @@ def test_question_candidate_rejects_invalid_values(invalid_values):
         QuestionCandidate(**values)
 
 
-@pytest.mark.parametrize("invalid_values", [{"question_id": ""}, {"question": ""}])
+@pytest.mark.parametrize(
+    "invalid_values",
+    [{"question_id": ""}, {"question": ""}, {"timestamp_ms": -1}],
+)
 def test_answer_card_rejects_empty_required_text(invalid_values):
     values = {"question_id": "q1", "question": "问题", "subject": "历史"}
     values.update(invalid_values)

@@ -194,6 +194,29 @@ async def test_final_question_streams_one_answer_card_to_answered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_question_card_records_session_elapsed_timestamp() -> None:
+    transcript = event("马克思出生于哪一年？")
+    question = candidate("q1", transcript.text)
+    recognizer = FakeRecognizer([transcript])
+    detector = FakeDetector({transcript.text: [question]})
+    client = FakeClient({question.text: ["1818年。"]})
+    cards: list[AnswerCard] = []
+
+    pipeline = LivePipeline(
+        recognizer,
+        detector,
+        client,
+        cards.append,
+        lambda _question_id, _answer: None,
+    )
+
+    await pipeline.run()
+
+    assert cards[0].timestamp_ms >= 0
+    assert cards[-1].timestamp_ms == cards[0].timestamp_ms
+
+
+@pytest.mark.asyncio
 async def test_partial_then_same_final_text_uses_one_card_and_one_request() -> None:
     partial = event("什么是文艺复兴", is_final=False)
     final = event("什么是文艺复兴？")

@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         self._pending_action: str | None = None
         self._cards: dict[str, AnswerCard] = {}
         self._items: dict[str, QListWidgetItem] = {}
+        self._current_question_id: str | None = None
 
         self.setWindowTitle(f"Classbot · {subject}")
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
@@ -57,6 +58,11 @@ class MainWindow(QMainWindow):
         self.transcript_label.setObjectName("transcriptLabel")
         self.transcript_label.setWordWrap(True)
         layout.addWidget(self.transcript_label)
+
+        self.current_question_label = QLabel("当前问题：等待识别…")
+        self.current_question_label.setObjectName("currentQuestionLabel")
+        self.current_question_label.setWordWrap(True)
+        layout.addWidget(self.current_question_label)
 
         self.cards_list = QListWidget()
         self.cards_list.setObjectName("cardsList")
@@ -112,6 +118,14 @@ class MainWindow(QMainWindow):
         self.transcript_label.setText(text or "等待转写…")
 
     @staticmethod
+    def format_elapsed_ms(timestamp_ms: int) -> str:
+        """Format a session-relative timestamp as ``HH:MM:SS``."""
+        total_seconds = max(0, timestamp_ms) // 1000
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    @staticmethod
     def render_card_text(card: AnswerCard) -> str:
         """Render one complete card from its current snapshot."""
         if card.answer:
@@ -124,7 +138,7 @@ class MainWindow(QMainWindow):
             answer = "等待回答…"
         status = getattr(card.status, "value", str(card.status))
         lines = [
-            f"问题：{card.question}",
+            f"[{MainWindow.format_elapsed_ms(card.timestamp_ms)}] 问题：{card.question}",
             f"回答：{answer}",
             f"状态：{status}",
         ]
@@ -136,6 +150,7 @@ class MainWindow(QMainWindow):
         """Insert or redraw the card identified by ``question_id``."""
         snapshot = replace(card)
         item = self._items.get(snapshot.question_id)
+        is_new = item is None
         if item is None:
             if len(self._cards) >= self._MAX_CARDS:
                 self._remove_oldest_card()
@@ -147,6 +162,13 @@ class MainWindow(QMainWindow):
             self._cards[snapshot.question_id] = snapshot
 
         item.setText(self.render_card_text(snapshot))
+        if is_new or snapshot.question_id == self._current_question_id:
+            self._current_question_id = snapshot.question_id
+            self.current_question_label.setText(
+                "当前问题 ["
+                f"{self.format_elapsed_ms(snapshot.timestamp_ms)}]\n"
+                f"{snapshot.question}"
+            )
 
     def _remove_oldest_card(self) -> None:
         oldest_question_id = next(iter(self._cards))

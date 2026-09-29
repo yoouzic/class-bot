@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ class LivePipeline:
         self._stop_complete = False
         self._diagnostics: list[str] = []
         self._cleanup_errors: list[BaseException] = []
+        self._session_started_at: float | None = None
 
     @property
     def diagnostics(self) -> tuple[str, ...]:
@@ -121,6 +123,7 @@ class LivePipeline:
 
     async def _run_owner(self) -> None:
         try:
+            self._session_started_at = time.monotonic()
             if self._stop_requested:
                 return
             if not self._prepared:
@@ -248,6 +251,7 @@ class LivePipeline:
                 question=candidate.text,
                 subject=candidate.subject,
                 status=CardStatus.DETECTED,
+                timestamp_ms=self._elapsed_ms(),
             )
             state = _QuestionState(
                 card=card,
@@ -426,6 +430,11 @@ class LivePipeline:
     @staticmethod
     def _is_current(state: _QuestionState, revision: int) -> bool:
         return state.revision == revision
+
+    def _elapsed_ms(self) -> int:
+        if self._session_started_at is None:
+            return 0
+        return max(0, int((time.monotonic() - self._session_started_at) * 1000))
 
     @staticmethod
     def _readable_error(error: BaseException) -> str:

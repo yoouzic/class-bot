@@ -28,6 +28,13 @@ Start the application with:
 python -m classbot
 ```
 
+The floating window keeps each new speech segment as its own question card,
+shows the current question with a session-relative `HH:MM:SS` timestamp, and
+retains the recent question history. Explicit classroom vocatives are removed
+from answer prompts, while long lecture scaffolding without a question ending
+is filtered before an API request. Repeated questions from different speech
+segments are intentionally kept.
+
 The first startup downloads the `paraformer-zh-streaming` ASR model and can
 take a while. Obtain appropriate classroom consent before using the app.
 

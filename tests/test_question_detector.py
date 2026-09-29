@@ -136,6 +136,68 @@ def test_qingwen_question_triggers_candidate():
     assert candidates[0].text == "请问马克思的生辰"
 
 
+def test_explicit_vocative_prefix_is_removed_from_question_text():
+    detector = QuestionDetector(subject="历史")
+
+    candidate = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="各位同学，马克思的生辰是什么？",
+                is_final=True,
+            )
+        )
+    )
+
+    assert candidate.text == "马克思的生辰是什么"
+
+
+def test_long_lecture_scaffolding_without_question_ending_is_filtered():
+    detector = QuestionDetector(subject="哲学")
+
+    assert (
+        detector.feed(
+            TranscriptEvent(
+                text="现在打开教材看一下什么是运动什么是静止",
+                is_final=True,
+            )
+        )
+        == []
+    )
+
+
+def test_long_recap_without_question_ending_is_filtered():
+    detector = QuestionDetector(subject="哲学")
+
+    assert (
+        detector.feed(
+            TranscriptEvent(
+                text=(
+                    "那么接着呢我们又学习了马克思主义唯物论他是如何看世界的"
+                    "在这里大家只需要掌握马克思主义的物质观尤其是关于物质的概念"
+                    "啊它的定义物质的唯一特性是"
+                ),
+                is_final=True,
+            )
+        )
+        == []
+    )
+
+
+def test_question_ending_survives_lecture_context_prefix():
+    detector = QuestionDetector(subject="哲学")
+
+    candidate = _one(
+        detector.feed(
+            TranscriptEvent(
+                text="我们来看看，哲学的基本问题是什么？",
+                is_final=True,
+            )
+        )
+    )
+
+    assert candidate.text == "我们来看看哲学的基本问题是什么"
+
+
 @pytest.mark.parametrize(
     "text",
     [

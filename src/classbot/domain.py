@@ -52,9 +52,12 @@ class AnswerCard:
     answer: str = ""
     status: CardStatus = CardStatus.DETECTED
     error: str | None = None
+    timestamp_ms: int = 0
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():
             raise ValueError("question_id must not be empty")
         if not self.question.strip():
             raise ValueError("question must not be empty")
+        if self.timestamp_ms < 0:
+            raise ValueError("timestamp_ms must not be negative")

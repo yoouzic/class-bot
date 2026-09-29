@@ -35,6 +35,7 @@ def make_card(
     answer: str = "",
     status: CardStatus = CardStatus.DETECTED,
     error: str | None = None,
+    timestamp_ms: int = 0,
 ) -> AnswerCard:
     return AnswerCard(
         question_id=question_id,
@@ -43,6 +44,7 @@ def make_card(
         answer=answer,
         status=status,
         error=error,
+        timestamp_ms=timestamp_ms,
     )
 
 
@@ -54,6 +56,7 @@ def test_window_starts_with_classroom_floating_state(window):
     assert window.size().height() == 560
     assert window.status_label.text() == "已停止"
     assert window.transcript_label.text() == "等待转写…"
+    assert window.current_question_label.text() == "当前问题：等待识别…"
     assert window.cards_list.count() == 0
     assert window.toggle_button.text() == "开始监听"
 
@@ -236,6 +239,32 @@ def test_error_card_shows_failure_and_new_answer_clears_old_error(window):
     assert "回答：新的累计答案" in answered_render
     assert "旧 API 错误" not in answered_render
     assert "错误：" not in answered_render
+
+
+def test_current_question_label_tracks_newest_card_and_card_shows_timestamp(window):
+    window.upsert_card(
+        make_card(
+            question="哲学的基本问题是什么",
+            timestamp_ms=65_000,
+        )
+    )
+
+    assert window.current_question_label.text() == (
+        "当前问题 [00:01:05]\n哲学的基本问题是什么"
+    )
+    assert "[00:01:05]" in window.cards_list.item(0).text()
+
+    window.upsert_card(
+        make_card(
+            question_id="q2",
+            question="物质的概念是什么",
+            timestamp_ms=66_000,
+        )
+    )
+
+    assert window.current_question_label.text() == (
+        "当前问题 [00:01:06]\n物质的概念是什么"
+    )
 
 
 def test_close_emits_close_requested(window):
