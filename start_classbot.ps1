@@ -39,11 +39,9 @@ try {
 catch {
     Stop-Launcher "Runtime dependency check failed: $($_.Exception.Message)"
 }
-finally {
-    $env:PYTHONPATH = $OldPythonPath
-}
 
 if ($CheckOnly) {
+    $env:PYTHONPATH = $OldPythonPath
     Write-Host "[Classbot] Check passed. The microphone launcher is ready." -ForegroundColor Green
     exit 0
 }
@@ -56,6 +54,7 @@ try {
 }
 finally {
     Pop-Location
+    $env:PYTHONPATH = $OldPythonPath
 }
 
 if ($ExitCode -ne 0) {
