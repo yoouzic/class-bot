@@ -72,6 +72,7 @@ class FunAsrStreamingRecognizer:
         self._residual = np.empty(0, dtype=np.float32)
         self._segment_audio: list[np.ndarray] = []
         self._cache: dict[str, Any] = {}
+        self._raw_segment_text = ""
         self._segment_text = ""
         self._last_text = ""
         self._segment_id = 0
@@ -301,6 +302,7 @@ class FunAsrStreamingRecognizer:
         if self.final_refinement:
             refined_text = await self._refine_segment()
             if refined_text:
+                self._raw_segment_text = refined_text
                 self._segment_text = refined_text
                 self._last_text = refined_text
         if self._last_text:
@@ -309,6 +311,7 @@ class FunAsrStreamingRecognizer:
         self._residual = np.empty(0, dtype=np.float32)
         self._segment_audio = []
         self._cache = {}
+        self._raw_segment_text = ""
         self._segment_text = ""
         self._last_text = ""
         self._segment_id += 1
@@ -345,13 +348,18 @@ class FunAsrStreamingRecognizer:
                 self._inference_tasks.discard(inference_task)
 
         emitted = False
-        for text in _texts_from_result(result):
-            if not text.strip():
+        for raw_text in _texts_from_result(result):
+            if not raw_text.strip():
                 continue
-            if self._segment_text and text.startswith(self._segment_text):
-                self._segment_text = text
+            if self._raw_segment_text and raw_text.startswith(
+                self._raw_segment_text
+            ):
+                self._raw_segment_text = raw_text
             else:
-                self._segment_text += text
+                self._raw_segment_text += raw_text
+            self._segment_text = self._apply_corrections(
+                self._raw_segment_text
+            )
             self._last_text = self._segment_text
             if emit:
                 self._emit_event(self._segment_text, is_final=is_final)
@@ -392,9 +400,16 @@ class FunAsrStreamingRecognizer:
                 self._inference_tasks.discard(inference_task)
 
         refined_text = "".join(
-            text for text in _texts_from_result(result) if text.strip()
+            self._apply_corrections(text)
+            for text in _texts_from_result(result)
+            if text.strip()
         )
         return refined_text.strip()
+
+    def _apply_corrections(self, text: str) -> str:
+        for wrong, right in self.corrections.items():
+            text = text.replace(wrong, right)
+        return text
 
     def _postprocess_kwargs(self, *, final_refinement: bool) -> dict[str, Any]:
         options: dict[str, Any] = {}
@@ -446,6 +461,7 @@ class FunAsrStreamingRecognizer:
         self._residual = np.empty(0, dtype=np.float32)
         self._segment_audio = []
         self._cache = {}
+        self._raw_segment_text = ""
         self._segment_text = ""
         self._last_text = ""
         self._segment_id = 0

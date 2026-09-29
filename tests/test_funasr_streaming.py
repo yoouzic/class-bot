@@ -248,6 +248,44 @@ async def test_final_refinement_passes_course_hotwords_and_corrections(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_streaming_output_applies_course_corrections(monkeypatch):
+    model = FakeModel(["可助论"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        corrections={"可助论": "唯物论"},
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    event = await _next_event(events)
+
+    assert event.text == "唯物论"
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_streaming_output_corrects_terms_split_across_chunks(monkeypatch):
+    model = FakeModel(["随心一", "意"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        corrections={"随心一意": "唯心主义"},
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    await _next_event(events)
+    recognizer.push_audio(_pcm(160))
+    second = await _next_event(events)
+
+    assert second.text == "唯心主义"
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
 async def test_live_mode_skips_blocking_full_segment_refinement(monkeypatch):
     class RefiningModel:
         def __init__(self):

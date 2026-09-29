@@ -50,3 +50,19 @@ def test_load_course_profile_rejects_unknown_course(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="unknown"):
         load_course_profile("unknown")
+
+
+def test_marxism_profile_covers_observed_asr_errors():
+    profile = load_course_profile("marxism_basic_principles_2023")
+
+    assert profile.corrections == {
+        **profile.corrections,
+        "马自主义": "马克思主义",
+        "马思思主": "马克思主义",
+        "唯特性": "唯一特性",
+        "随心主意": "唯心主义",
+        "近带形儿上学": "近代形而上学",
+        "可助论": "唯物论",
+        "意味性": "一维性",
+        "三维星": "三维性",
+    }
