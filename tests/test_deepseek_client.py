@@ -38,6 +38,7 @@ async def test_stream_answer_sends_request_contract_and_yields_sse_content():
         payload = json.loads(request.content)
         assert payload["model"] == "deepseek-flash"
         assert payload["stream"] is True
+        assert payload["thinking"] == {"type": "disabled"}
         assert payload["temperature"] == 0.2
         assert payload["max_tokens"] == 120
         assert [message["role"] for message in payload["messages"]] == [
