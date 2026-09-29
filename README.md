@@ -28,6 +28,11 @@ Start the application with:
 python -m classbot
 ```
 
+For a one-click Windows start, double-click `start_classbot.bat`. It checks
+the virtual environment, local `.env`, and ASR dependencies before opening the
+microphone listener. To validate setup without launching the UI, run
+`powershell -ExecutionPolicy Bypass -File .\start_classbot.ps1 -CheckOnly`.
+
 The floating window keeps each new speech segment as its own question card,
 shows the current question with a session-relative `HH:MM:SS` timestamp, and
 retains the recent question history. Explicit classroom vocatives are removed
