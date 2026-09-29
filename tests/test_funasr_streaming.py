@@ -123,7 +123,7 @@ async def test_streaming_chunks_accumulate_within_one_segment(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_finish_increments_segment_id_and_new_segment_emits_new_event(monkeypatch):
-    model = FakeModel(["第一段", "第一段", "第二段"])
+    model = FakeModel(["第一段", "第二段"])
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
     recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
     events = recognizer.events()
@@ -139,8 +139,8 @@ async def test_finish_increments_segment_id_and_new_segment_emits_new_event(monk
 
     assert first.segment_id == first_final.segment_id == 0
     assert first_final.is_final is True
-    assert model.calls[1]["is_final"] is True
-    assert model.calls[1]["input"].size == 0
+    assert model.calls[1]["is_final"] is False
+    assert model.calls[1]["input"].size == 160
     assert second.text == "第二段"
     assert second.segment_id == 1
     assert second.segment_id != first.segment_id
@@ -186,7 +186,10 @@ async def test_long_segment_is_refined_with_full_final_decode(monkeypatch):
 
     model = RefiningModel()
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
-    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=True,
+    )
     events = recognizer.events()
 
     await recognizer.start()
@@ -224,6 +227,7 @@ async def test_final_refinement_passes_course_hotwords_and_corrections(monkeypat
         chunk_samples=160,
         hotwords=("主观唯心主义",),
         corrections={"违心": "唯心"},
+        final_refinement=True,
     )
     events = recognizer.events()
 
@@ -240,6 +244,68 @@ async def test_final_refinement_passes_course_hotwords_and_corrections(monkeypat
     assert final_call["postprocess_hotwords"] == {"违心": "唯心"}
     assert final_call["postprocess_hotword_fuzzy"] is False
 
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_live_mode_skips_blocking_full_segment_refinement(monkeypatch):
+    class RefiningModel:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["is_final"] and kwargs["input"].size > 160:
+                return [{"text": "完整最终文本"}]
+            if kwargs["is_final"]:
+                return [{"text": ""}]
+            return [{"text": "实时片段"}]
+
+    model = RefiningModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert final.text == "实时片段"
+    assert final.is_final is True
+    assert all(call["input"].size <= 160 for call in model.calls)
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_audio_after_finish_marker_is_processed_as_next_segment(monkeypatch):
+    model = FakeModel(["第一段", "第二段"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    first = await _next_event(events)
+    recognizer.finish_segment()
+    recognizer.push_audio(_pcm(160, value=-2000))
+    recognizer.finish_segment()
+
+    first_final = await _next_event(events)
+    second = await _next_event(events)
+    second_final = await _next_event(events)
+
+    assert first.segment_id == first_final.segment_id == 0
+    assert first_final.is_final is True
+    assert second.segment_id == 1
+    assert second.text == "第二段"
+    assert second_final.segment_id == 1
+    assert second_final.text == "第二段"
+    assert second_final.is_final is True
     await recognizer.stop()
 
 
@@ -462,8 +528,27 @@ async def test_stop_waits_for_inference_thread_before_session_cleanup(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_finish_marker_survives_full_queue_and_drops_later_audio(monkeypatch):
-    model = PhaseModel()
+async def test_live_queue_buffers_a_short_inference_burst(monkeypatch):
+    model = BlockingInferenceModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    await asyncio.wait_for(asyncio.to_thread(model.started.wait, 1), timeout=1)
+
+    for _ in range(400):
+        recognizer.push_audio(_pcm(160))
+
+    assert recognizer._input_queue.qsize() >= 400
+
+    model.release.set()
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_finish_marker_survives_full_queue_in_live_mode(monkeypatch):
+    model = FakeModel(["第一段"])
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
     recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
     events = recognizer.events()
@@ -476,11 +561,13 @@ async def test_finish_marker_survives_full_queue_and_drops_later_audio(monkeypat
         recognizer.push_audio(_pcm(160, value=-1000))
 
     final = await _next_event(events)
+    while not final.is_final:
+        final = await _next_event(events)
     await _wait_until(lambda: recognizer._segment_id == 1)
 
-    assert final.text == "final"
+    assert final.text == "第一段"
     assert final.is_final is True
     assert final.segment_id == 0
-    assert len([call for call in model.calls if call["is_final"]]) == 2
+    assert len([call for call in model.calls if call["is_final"]]) == 0
     assert recognizer._closing is False
     await recognizer.stop()

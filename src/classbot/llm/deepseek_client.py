@@ -98,7 +98,7 @@ class DeepSeekClient:
             "thinking": {
                 "type": "enabled" if thinking_enabled else "disabled"
             },
-            "max_tokens": 512 if thinking_enabled else 120,
+            "max_tokens": 1024 if thinking_enabled else 120,
         }
         if thinking_enabled:
             payload["reasoning_effort"] = self._settings.thinking_effort

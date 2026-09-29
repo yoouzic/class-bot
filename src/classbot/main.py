@@ -32,6 +32,7 @@ def _make_recognizer(device: str) -> FunAsrStreamingRecognizer:
         device=device,
         hotwords=profile.hotwords,
         corrections=profile.corrections,
+        final_refinement=False,
     )
 
 

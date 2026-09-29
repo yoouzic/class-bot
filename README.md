@@ -55,6 +55,11 @@ The PDF and generated reference index are ignored by Git and stay local.
 The first startup downloads the `paraformer-zh-streaming` ASR model and can
 take a while. Obtain appropriate classroom consent before using the app.
 
+The live microphone path prioritizes continuity: it finalizes from the
+streaming cache instead of blocking on a second full-segment decode, accepts
+audio across adjacent speech segments, and buffers short CPU inference spikes
+so new classroom speech is not discarded.
+
 Classbot does not write raw audio to disk and does not play sound. Network,
 DeepSeek API, and ASR failures are surfaced in the window as visible status
 states, including `API 错误` and `ASR 不可用`.

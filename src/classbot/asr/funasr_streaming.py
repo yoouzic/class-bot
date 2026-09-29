@@ -9,7 +9,7 @@ import numpy as np
 
 from classbot.domain import TranscriptEvent
 
-_AUDIO_QUEUE_SIZE = 32
+_AUDIO_QUEUE_SIZE = 512
 _INPUT_QUEUE_SIZE = _AUDIO_QUEUE_SIZE + 1
 _FINISH = object()
 SAMPLE_RATE = 16_000
@@ -36,6 +36,7 @@ class FunAsrStreamingRecognizer:
         chunk_samples: int = 9600,
         hotwords: Iterable[str] = (),
         corrections: Mapping[str, str] | None = None,
+        final_refinement: bool = False,
     ):
         if chunk_samples <= 0:
             raise ValueError("chunk_samples must be positive")
@@ -50,6 +51,7 @@ class FunAsrStreamingRecognizer:
             for wrong, right in (corrections or {}).items()
             if str(wrong).strip() and str(right).strip()
         }
+        self.final_refinement = final_refinement
         self._input_queue: asyncio.Queue[bytes | object] = asyncio.Queue(
             _INPUT_QUEUE_SIZE
         )
@@ -121,8 +123,6 @@ class FunAsrStreamingRecognizer:
 
     def push_audio(self, frame: bytes) -> None:
         self._ensure_running()
-        if self._closing:
-            return
 
         if self._input_queue.qsize() >= _AUDIO_QUEUE_SIZE:
             self._input_queue.get_nowait()
@@ -130,9 +130,6 @@ class FunAsrStreamingRecognizer:
 
     def finish_segment(self) -> None:
         self._ensure_running()
-        if self._closing:
-            return
-
         self._closing = True
         try:
             self._input_queue.put_nowait(_FINISH)
@@ -300,13 +297,12 @@ class FunAsrStreamingRecognizer:
             self._residual = np.empty(0, dtype=np.float32)
             self._segment_samples += int(residual.size)
             await self._infer(residual, is_final=True, emit=False)
-        else:
-            await self._infer(np.empty(0, dtype=np.float32), is_final=True, emit=False)
 
-        refined_text = await self._refine_segment()
-        if refined_text:
-            self._segment_text = refined_text
-            self._last_text = refined_text
+        if self.final_refinement:
+            refined_text = await self._refine_segment()
+            if refined_text:
+                self._segment_text = refined_text
+                self._last_text = refined_text
         if self._last_text:
             self._emit_event(self._last_text, is_final=True)
 

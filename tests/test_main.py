@@ -23,3 +23,4 @@ def test_default_recognizer_loads_selected_course_profile(monkeypatch):
 
     assert recognizer.hotwords == ("辩证唯物主义",)
     assert recognizer.corrections == {"违心": "唯心"}
+    assert recognizer.final_refinement is False

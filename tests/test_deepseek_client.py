@@ -136,7 +136,7 @@ async def test_stream_answer_includes_relevant_textbook_reference(monkeypatch):
         payload = json.loads(request.content)
         assert payload["thinking"] == {"type": "enabled"}
         assert payload["reasoning_effort"] == "high"
-        assert payload["max_tokens"] == 512
+        assert payload["max_tokens"] == 1024
         user_message = payload["messages"][1]["content"]
         assert "教材参考" in user_message
         assert "物质决定意识，意识对物质具有能动的反作用" in user_message
