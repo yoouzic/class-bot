@@ -52,4 +52,4 @@
 
 - [x] **Step 1: Run `python -m pytest -q`, `python -m ruff check src tests`, and `python -m compileall src`.
 - [x] **Step 2: Run a real API smoke test using the local `.env` without printing the key; verify a current question returns a concise answer.
-- [ ] **Step 3: Inspect `git diff --check`, verify the worktree state, commit the implementation, and push the existing PR branch.
+- [x] **Step 3: Inspect `git diff --check`, verify the worktree state, commit the implementation, and push the existing PR branch.
