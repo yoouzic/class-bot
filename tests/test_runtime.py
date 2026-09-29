@@ -652,6 +652,7 @@ async def test_audio_loop_only_pushes_frames_inside_speech_segment():
     await wait_until(lambda: recognizer.finish_calls == 1)
     assert detector.begin_calls == 1
     assert recognizer.push_calls == [
+        b"leading silence",
         b"speech",
         b"speech continuation",
         b"ending silence",
@@ -660,6 +661,40 @@ async def test_audio_loop_only_pushes_frames_inside_speech_segment():
     await controller.stop()
     assert runtime.audio_task is not None
     assert runtime.audio_task.done()
+
+
+@pytest.mark.asyncio
+async def test_audio_loop_includes_recent_preroll_when_speech_starts():
+    factory = RuntimeFactory(
+        segment_events=[
+            SegmentEvent(),
+            SegmentEvent(),
+            SegmentEvent(speech_started=True),
+            SegmentEvent(),
+            SegmentEvent(speech_ended=True),
+        ]
+    )
+    controller = make_controller(factory)
+
+    await controller.start()
+    capture = factory.sessions[0]["capture"]
+    recognizer = factory.sessions[0]["recognizer"]
+    capture.feed(b"before one")
+    capture.feed(b"before two")
+    capture.feed(b"speech")
+    capture.feed(b"speech continuation")
+    capture.feed(b"ending silence")
+
+    await wait_until(lambda: recognizer.finish_calls == 1)
+    assert recognizer.push_calls == [
+        b"before one",
+        b"before two",
+        b"speech",
+        b"speech continuation",
+        b"ending silence",
+    ]
+
+    await controller.stop()
 
 
 @pytest.mark.asyncio

@@ -171,6 +171,42 @@ async def test_empty_final_inference_replays_last_partial_text(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_long_segment_is_refined_with_full_final_decode(monkeypatch):
+    class RefiningModel:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["is_final"] and kwargs["input"].size > 160:
+                return [{"text": "完整最终文本"}]
+            if kwargs["is_final"]:
+                return [{"text": ""}]
+            return [{"text": "实时片段"}]
+
+    model = RefiningModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    recognizer = FunAsrStreamingRecognizer(chunk_samples=160)
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert final.text == "完整最终文本"
+    assert final.is_final is True
+    assert model.calls[-1]["is_final"] is True
+    assert model.calls[-1]["input"].size == 400
+    assert model.calls[-1]["cache"] is not model.calls[0]["cache"]
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_reliably_ends_events(monkeypatch):
     model = FakeModel([])
     monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
@@ -408,6 +444,6 @@ async def test_finish_marker_survives_full_queue_and_drops_later_audio(monkeypat
     assert final.text == "final"
     assert final.is_final is True
     assert final.segment_id == 0
-    assert len([call for call in model.calls if call["is_final"]]) == 1
+    assert len([call for call in model.calls if call["is_final"]]) == 2
     assert recognizer._closing is False
     await recognizer.stop()

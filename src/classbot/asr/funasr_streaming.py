@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
@@ -12,6 +13,7 @@ _AUDIO_QUEUE_SIZE = 32
 _INPUT_QUEUE_SIZE = _AUDIO_QUEUE_SIZE + 1
 _FINISH = object()
 SAMPLE_RATE = 16_000
+_LOGGER = logging.getLogger(__name__)
 
 
 class _EventsEnd:
@@ -52,6 +54,7 @@ class FunAsrStreamingRecognizer:
         self._events_closed = False
         self._worker_error: Exception | None = None
         self._residual = np.empty(0, dtype=np.float32)
+        self._segment_audio: list[np.ndarray] = []
         self._cache: dict[str, Any] = {}
         self._segment_text = ""
         self._last_text = ""
@@ -264,6 +267,8 @@ class FunAsrStreamingRecognizer:
         if samples.size == 0:
             return
 
+        self._segment_audio.append(samples)
+
         if self._residual.size:
             self._residual = np.concatenate((self._residual, samples))
         else:
@@ -276,28 +281,36 @@ class FunAsrStreamingRecognizer:
             await self._infer(chunk, is_final=False)
 
     async def _finish_current_segment(self) -> None:
-        emitted = False
         if self._residual.size:
             residual = self._residual
             self._residual = np.empty(0, dtype=np.float32)
             self._segment_samples += int(residual.size)
-            emitted = await self._infer(residual, is_final=True)
+            await self._infer(residual, is_final=True, emit=False)
         else:
-            emitted = await self._infer(
-                np.empty(0, dtype=np.float32), is_final=True
-            )
+            await self._infer(np.empty(0, dtype=np.float32), is_final=True, emit=False)
 
-        if not emitted and self._last_text:
+        refined_text = await self._refine_segment()
+        if refined_text:
+            self._segment_text = refined_text
+            self._last_text = refined_text
+        if self._last_text:
             self._emit_event(self._last_text, is_final=True)
 
         self._residual = np.empty(0, dtype=np.float32)
+        self._segment_audio = []
         self._cache = {}
         self._segment_text = ""
         self._last_text = ""
         self._segment_id += 1
         self._segment_samples = 0
 
-    async def _infer(self, samples: np.ndarray, is_final: bool) -> bool:
+    async def _infer(
+        self,
+        samples: np.ndarray,
+        is_final: bool,
+        *,
+        emit: bool = True,
+    ) -> bool:
         if self._model is None:
             raise RuntimeError("ASR model is not loaded")
 
@@ -329,9 +342,47 @@ class FunAsrStreamingRecognizer:
             else:
                 self._segment_text += text
             self._last_text = self._segment_text
-            self._emit_event(self._segment_text, is_final=is_final)
+            if emit:
+                self._emit_event(self._segment_text, is_final=is_final)
             emitted = True
         return emitted
+
+    async def _refine_segment(self) -> str:
+        if self._model is None or len(self._segment_audio) < 2:
+            return ""
+
+        samples = np.concatenate(self._segment_audio)
+        if samples.size < self.chunk_samples * 2:
+            return ""
+
+        inference_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._model.generate,
+                input=samples,
+                cache={},
+                is_final=True,
+                chunk_size=[0, 10, 5],
+                encoder_chunk_look_back=4,
+                decoder_chunk_look_back=1,
+            )
+        )
+        self._inference_tasks.add(inference_task)
+        inference_task.add_done_callback(self._inference_done)
+        try:
+            result = await asyncio.shield(inference_task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - refinement is best effort
+            _LOGGER.warning("final ASR refinement failed: %s", error)
+            return ""
+        finally:
+            if inference_task.done():
+                self._inference_tasks.discard(inference_task)
+
+        refined_text = "".join(
+            text for text in _texts_from_result(result) if text.strip()
+        )
+        return refined_text.strip()
 
     def _inference_done(self, task: asyncio.Task[Any]) -> None:
         self._inference_tasks.discard(task)
@@ -367,6 +418,7 @@ class FunAsrStreamingRecognizer:
 
     def _reset_transient_state(self) -> None:
         self._residual = np.empty(0, dtype=np.float32)
+        self._segment_audio = []
         self._cache = {}
         self._segment_text = ""
         self._last_text = ""

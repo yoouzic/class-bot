@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import sys
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -19,6 +20,7 @@ from classbot.question_detector import QuestionDetector
 from classbot.ui.main_window import MainWindow
 
 _LOGGER = logging.getLogger(__name__)
+_PRE_ROLL_FRAMES = 10
 Factory = Callable[..., Any]
 
 
@@ -410,12 +412,16 @@ class RuntimeController:
 
     async def _audio_loop(self, runtime: Runtime) -> None:
         in_speech = False
+        pre_roll: deque[bytes] = deque(maxlen=_PRE_ROLL_FRAMES)
         try:
             async for frame in runtime.capture.frames():
+                pre_roll.append(frame)
                 event = runtime.segmenter.accept(frame)
                 if event.speech_started:
                     in_speech = True
                     runtime.detector.begin_segment()
+                    for buffered_frame in tuple(pre_roll)[:-1]:
+                        runtime.recognizer.push_audio(buffered_frame)
                 if in_speech:
                     runtime.recognizer.push_audio(frame)
                 if event.speech_ended:
