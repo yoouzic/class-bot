@@ -37,7 +37,8 @@ def _make_recognizer(device: str) -> FunAsrStreamingRecognizer:
 
 
 def _make_detector(subject: str) -> QuestionDetector:
-    return QuestionDetector(subject)
+    profile = load_course_profile(os.getenv("CLASSBOT_COURSE", ""))
+    return QuestionDetector(subject, hotwords=profile.hotwords)
 
 
 @dataclass(frozen=True, slots=True)

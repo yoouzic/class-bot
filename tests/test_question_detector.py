@@ -486,3 +486,151 @@ def test_short_or_signal_free_text_does_not_emit_candidate():
         )
         == []
     )
+
+
+def test_embedded_explanation_phrase_is_not_a_question():
+    detector = QuestionDetector(subject="哲学", hotwords=("世界观",))
+
+    assert detector.feed(
+        TranscriptEvent(
+            text="其次呢我们又了解了什么是世界观",
+            is_final=True,
+        )
+    ) == []
+
+
+def test_incomplete_partial_is_waited_for():
+    detector = QuestionDetector(subject="哲学", hotwords=("马克思主义",))
+
+    assert detector.feed(
+        TranscriptEvent(
+            text="第二个重点就是马克思主义是如何",
+            is_final=False,
+        )
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "李信同学在吗",
+        "声音大一点",
+        "答案不就在这里吗",
+        "对不对",
+    ],
+)
+def test_management_and_isolated_confirmation_are_filtered(text):
+    detector = QuestionDetector(subject="哲学", hotwords=("物质",))
+
+    assert detector.feed(TranscriptEvent(text=text, is_final=True)) == []
+
+
+def test_long_explanation_returns_only_the_final_academic_question():
+    detector = QuestionDetector(subject="哲学", hotwords=("哲学", "世界观"))
+
+    candidates = detector.feed(
+        TranscriptEvent(
+            text=(
+                "哲学是系统化理论化的世界观然后所以诸位"
+                "哲学的基本问题是什么呀"
+            ),
+            is_final=True,
+        )
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "哲学的基本问题是什么"
+
+
+def test_called_student_question_removes_only_safe_name_prefix():
+    detector = QuestionDetector(subject="哲学", hotwords=("哲学",))
+
+    candidates = detector.feed(
+        TranscriptEvent(text="李卓阳哲学的基本问题是什么", is_final=True)
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "哲学的基本问题是什么"
+
+
+def test_choice_question_survives_name_prefix():
+    detector = QuestionDetector(subject="哲学")
+
+    candidates = detector.feed(
+        TranscriptEvent(text="陈林西第三题选哪个", is_final=True)
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "第三题选哪个"
+
+
+def test_confirmation_with_a_textbook_proposition_is_answerable():
+    detector = QuestionDetector(subject="哲学", hotwords=("物质", "意识"))
+
+    candidates = detector.feed(
+        TranscriptEvent(
+            text="物质和意识的辩证关系对不对",
+            is_final=True,
+        )
+    )
+
+    assert len(candidates) == 1
+
+
+def test_course_topic_prefix_is_not_removed_as_a_student_name():
+    detector = QuestionDetector(
+        subject="哲学",
+        hotwords=("世界观", "方法论"),
+    )
+
+    candidates = detector.feed(
+        TranscriptEvent(text="世界观跟方法论的关系是什么", is_final=True)
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "世界观跟方法论的关系是什么"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "因为我现在的关系呢",
+        "强调的就是我们的事件不是凝固的而这个呢",
+        "不管我们遇到什么问题啊大家",
+        "赵阳没在是吧朱伟汉",
+        "就是谁撕维就存在谁",
+        "我们需要掌握的哲学的基本问题什么是物质什么",
+    ],
+)
+def test_discourse_and_confirmation_fragments_are_filtered(text):
+    detector = QuestionDetector(subject="哲学", hotwords=("关系",))
+
+    assert detector.feed(TranscriptEvent(text=text, is_final=True)) == []
+
+
+def test_question_before_teacher_answer_is_extracted():
+    detector = QuestionDetector(subject="哲学", hotwords=("物质",))
+
+    candidates = detector.feed(
+        TranscriptEvent(
+            text="这么快就忘了物质的唯一特性是什么呀我客观实在性啊很好",
+            is_final=True,
+        )
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "物质的唯一特性是什么"
+
+
+def test_management_prefix_before_academic_question_is_removed():
+    detector = QuestionDetector(subject="哲学", hotwords=("哲学",))
+
+    candidates = detector.feed(
+        TranscriptEvent(
+            text="听题目了没有啊哲学是什么样的世界观",
+            is_final=True,
+        )
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "哲学是什么样的世界观"

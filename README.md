@@ -38,9 +38,12 @@ microphone listener. To validate setup without launching the UI, run
 The floating window keeps each new speech segment as its own question card,
 shows the current question with a session-relative `HH:MM:SS` timestamp, and
 retains the recent question history. Explicit classroom vocatives are removed
-from answer prompts, while long lecture scaffolding without a question ending
-is filtered before an API request. Repeated questions from different speech
-segments are intentionally kept.
+from answer prompts. The detector only sends stable textbook knowledge
+questions and choice questions to the API; names, classroom-management speech,
+isolated confirmations, and lecture scaffolding remain in the transcript but do
+not create answer cards. A partial question may wait for a complete ending
+before it is submitted. Repeated questions from different speech segments are
+intentionally kept.
 
 Course-specific profiles live under `courses/`. Each profile can provide
 `hotwords.txt`, `corrections.txt` for recognition fixes, and an optional local
