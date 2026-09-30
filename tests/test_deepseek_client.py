@@ -166,6 +166,53 @@ async def test_stream_answer_includes_relevant_textbook_reference(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stream_answer_prioritizes_original_textbook_wording(
+    monkeypatch,
+):
+    profile = CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第7页] 哲学的基本问题是思维和存在的关系问题。",
+        ),
+    )
+    monkeypatch.setenv("CLASSBOT_COURSE", "demo")
+    monkeypatch.setattr(
+        deepseek_module, "load_course_profile", lambda _course_id: profile
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system_message = payload["messages"][0]["content"]
+        user_message = payload["messages"][1]["content"]
+        assert "教材原文优先" in system_message
+        assert "不得伪造教材原文或页码" in system_message
+        assert "教材原文候选" in user_message
+        assert "[第7页] 哲学的基本问题是思维和存在的关系问题" in user_message
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"choices": [{"delta": {"content": "教材原文回答"}}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = Settings(
+        deepseek_api_key="test-key",
+        subject="马克思主义基本原理",
+        model="deepseek-flash",
+        base_url="https://api.deepseek.example",
+        asr_device="cpu",
+        thinking_effort="high",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(
+            client, "哲学的基本问题是什么？", settings.subject
+        ) == ["教材原文回答"]
+
+
+@pytest.mark.asyncio
 async def test_missing_api_key_fails_before_transport_is_called():
     calls = 0
 

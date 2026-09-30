@@ -53,6 +53,8 @@ context without changing the source code.
 `CLASSBOT_THINKING=high` enables a higher-effort DeepSeek reasoning pass. When a
 question matches the local textbook index, the relevant excerpts are sent with
 the question so the answer prioritizes the book's terminology and conclusions.
+Answers also append the matching PDF page sequence, such as `PDF第37页`; the
+page sequence is taken from the provided PDF and is not guessed by the model.
 The PDF and generated reference index are ignored by Git and stay local.
 
 The first startup downloads the `paraformer-zh-streaming` ASR model and can

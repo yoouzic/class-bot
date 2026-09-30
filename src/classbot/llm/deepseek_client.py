@@ -17,7 +17,11 @@ _SYSTEM_PROMPT = (
     "你是一个课堂问答助手。只输出直接、准确、简短的中文答案（1～3句），"
     "不输出推理、寒暄、标题或代码块；不确定时明确说不确定。"
     "问题可能来自语音识别，结合课程领域做最小纠错；不要跨学科联想，"
-    "不要把猜测写成事实。优先先给教材中的结论，再补一句必要解释。"
+    "不要把猜测写成事实。保持简洁概括，不要整段照抄教材。"
+    "教材原文优先：回答要点必须优先依据教材原文候选，"
+    "每个要点后标注对应 PDF 页序，例如（PDF第37页）；"
+    "页码只能使用候选片段中实际出现的页码，不要自行换算印刷页码。"
+    "不得伪造教材原文或页码；若候选片段没有直接支持，写教材页码未匹配到。"
 )
 _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 1.0
 _MAX_RATE_LIMIT_COOLDOWN_SECONDS = 30.0
@@ -75,14 +79,16 @@ class DeepSeekClient:
             )
 
         thinking_enabled = self._settings.thinking_effort != "none"
-        references = self._course_profile.find_reference(question, limit=3)
+        references = self._course_profile.find_reference_excerpts(
+            question, limit=4, max_chars=700
+        )
         user_content = f"学科：{subject}\n问题：{question}"
         if references:
             reference_text = "\n".join(references)
             user_content += (
-                "\n\n教材参考（优先依据其中的术语和结论；"
-                "只保留必要的原文表述，不要整段照抄，也不要伪造教材未提供的引文）：\n"
-                + reference_text[:4000]
+                "\n\n教材原文候选（教材参考，用于概括和页码标注；"
+                "每段前保留教材页码；只能使用候选中的页码）：\n"
+                + reference_text[:5000]
             )
 
         payload = {

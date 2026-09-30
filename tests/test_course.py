@@ -34,6 +34,42 @@ def test_load_course_profile_reads_hotwords_and_corrections(tmp_path, monkeypatc
     )
 
 
+def test_reference_reader_compacts_pdf_cjk_spacing(tmp_path, monkeypatch):
+    courses_root = tmp_path / "courses"
+    profile_root = courses_root / "demo"
+    profile_root.mkdir(parents=True)
+    (profile_root / "reference.txt").write_text(
+        "[第1页] 马 克 思 主 义 基 本 原 理。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(course_module, "COURSES_ROOT", courses_root)
+
+    profile = load_course_profile("demo")
+
+    assert profile.reference_chunks == ("[第1页] 马克思主义基本原理。",)
+
+
+def test_find_reference_excerpts_returns_hit_window_with_page_marker():
+    profile = course_module.CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第7页] "
+            + "导入内容。" * 120
+            + "哲学的基本问题是思维和存在的关系问题。"
+            + "后续内容。" * 120,
+        ),
+    )
+
+    excerpts = profile.find_reference_excerpts(
+        "哲学的基本问题是什么", limit=1, max_chars=180
+    )
+
+    assert len(excerpts) == 1
+    assert excerpts[0].startswith("[第7页]")
+    assert "哲学的基本问题是思维和存在的关系问题" in excerpts[0]
+    assert len(excerpts[0]) <= 180
+
+
 def test_load_course_profile_without_course_returns_empty_profile(
     tmp_path, monkeypatch
 ):

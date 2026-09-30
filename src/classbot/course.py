@@ -20,6 +20,31 @@ class CourseProfile:
             object.__setattr__(self, "corrections", {})
 
     def find_reference(self, question: str, limit: int = 3) -> tuple[str, ...]:
+        return self._ranked_references(question, limit=limit)
+
+    def find_reference_excerpts(
+        self,
+        question: str,
+        *,
+        limit: int = 4,
+        max_chars: int = 700,
+    ) -> tuple[str, ...]:
+        """Return page-marked original-text windows around matching terms."""
+        if max_chars <= 0:
+            return ()
+
+        references = self._ranked_references(question, limit=limit)
+        query_terms = tuple(
+            sorted(_terms(question), key=lambda term: (-len(term), term))
+        )
+        return tuple(
+            _excerpt_reference(chunk, query_terms, max_chars=max_chars)
+            for chunk in references
+        )
+
+    def _ranked_references(
+        self, question: str, *, limit: int
+    ) -> tuple[str, ...]:
         if not question.strip() or not self.reference_chunks or limit <= 0:
             return ()
 
@@ -88,10 +113,61 @@ def _read_reference(path: Path) -> tuple[str, ...]:
     if not path.is_file():
         return ()
     return tuple(
-        line.strip()
+        _clean_pdf_spacing(line.strip())
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
+
+
+def _clean_pdf_spacing(text: str) -> str:
+    """Remove extraction spaces inserted between adjacent Chinese characters."""
+    text = re.sub(
+        r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text
+    )
+    text = re.sub(
+        r"(?<=[\u4e00-\u9fff])\s+(?=[，。；：！？、）》』】）])",
+        "",
+        text,
+    )
+    return re.sub(r"([（「『【《“‘])\s+", r"\1", text)
+
+
+def _excerpt_reference(
+    chunk: str,
+    query_terms: tuple[str, ...],
+    *,
+    max_chars: int,
+) -> str:
+    page_marker, separator, body = chunk.partition("]")
+    if separator:
+        page_marker = f"{page_marker}]"
+    else:
+        page_marker = ""
+        body = chunk
+
+    available = max_chars - len(page_marker) - 1
+    if available <= 0:
+        return page_marker[:max_chars]
+
+    positions = [
+        body.find(term) for term in query_terms if term and body.find(term) >= 0
+    ]
+    hit_position = min(positions) if positions else 0
+    before = min(120, hit_position)
+    start = max(0, hit_position - before)
+    end = min(len(body), start + available)
+    if end - start < available:
+        start = max(0, end - available)
+
+    excerpt = body[start:end].strip()
+    if start > 0:
+        excerpt = "…" + excerpt
+    if end < len(body):
+        excerpt += "…"
+    result = f"{page_marker} {excerpt}".strip()
+    if len(result) > max_chars:
+        result = f"{result[: max_chars - 1]}…"
+    return result
 
 
 def _terms(text: str) -> set[str]:
