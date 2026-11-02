@@ -49,8 +49,8 @@
 
 ## 五、验证
 
-- `tests/test_question_detector.py` 新增 13 个回归测试（89 passed），覆盖上述每类修复。
-- `tests/test_partial_punctuator.py` 8 个测试 + 识别器集成 4 个（已加载/未加载/失败降级/独立于 final_refinement 预加载）。
+- `tests/detection/test_question_detector.py` 新增 13 个回归测试（89 passed），覆盖上述每类修复。
+- `tests/asr/test_partial_punctuator.py` 8 个测试 + 识别器集成 4 个（已加载/未加载/失败降级/独立于 final_refinement 预加载）。
 - 全量：`python -m pytest -q` 通过；`ruff check src tests scripts` 通过；`git diff --check` 无空白错误。
 - 实时标点的速度前提：partial 节奏（1–3 秒/条）对 10–60ms 标点延迟有两 个数量级余量。
 
@@ -80,6 +80,6 @@
 
 ### 验证（追加部分）
 
-- `tests/test_web_search.py` 4 个解析/降级测试（真实网络探针验证过解析器后补的合成用例）。
-- `tests/test_deepseek_client.py` 新增 4 个（课堂网络兜底/无结果回退/关闭开关/答辩降级仅核验失败后触发），并修复了测试进程内 `.env` 泄漏课程配置导致的误命中（显式清空 `CLASSBOT_COURSE`）。
+- `tests/llm/test_web_search.py` 4 个解析/降级测试（真实网络探针验证过解析器后补的合成用例）。
+- `tests/llm/test_deepseek_client.py` 新增 4 个（课堂网络兜底/无结果回退/关闭开关/答辩降级仅核验失败后触发），并修复了测试进程内 `.env` 泄漏课程配置导致的误命中（显式清空 `CLASSBOT_COURSE`）。
 - 全量回归见文末运行记录。

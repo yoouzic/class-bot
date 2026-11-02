@@ -35,5 +35,6 @@
 - [README](../README.md)
 - [领域与运行约定](../CONTEXT.md)
 - [工具与脚本](../scripts/README.md)
+- [测试目录](../tests/README.md)
 - [实施计划目录](superpowers/plans/)
 - [设计文档目录](superpowers/specs/)

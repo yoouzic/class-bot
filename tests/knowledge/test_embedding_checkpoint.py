@@ -182,7 +182,7 @@ def test_build_lock_rejects_another_process_and_releases_after_exit(tmp_path):
         "except BuildInProgressError:\n"
         "    sys.exit(42)\n"
     )
-    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[2] / "src"))
     with BuildLock(metadata):
         blocked = subprocess.run(
             [sys.executable, "-c", program, str(metadata)],
@@ -218,7 +218,7 @@ def test_process_crash_releases_lock_and_preserves_completed_batches(tmp_path):
         "    checkpoint.append(0, np.full((2, 3), 7, dtype=np.float32))\n"
         "    os._exit(0)\n"
     )
-    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[2] / "src"))
     subprocess.run(
         [sys.executable, "-c", program, str(metadata)],
         env=environment,

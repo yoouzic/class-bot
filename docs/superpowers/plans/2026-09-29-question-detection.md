@@ -15,8 +15,8 @@
 - Modify: `src/classbot/question_detector.py` — local question-clause extraction, classroom-type filtering, safe suffix cleanup, course-hotword support.
 - Modify: `src/classbot/main.py` — pass the selected course profile hotwords to the detector factory.
 - Modify: `tmp/evaluate_recordings.py` — pass the same hotwords during offline recording evaluation so the report matches the desktop runtime.
-- Modify: `tests/test_question_detector.py` — recorded-speech regression tests and existing lifecycle assertions.
-- Modify: `tests/test_main.py` — detector factory course-profile wiring test.
+- Modify: `tests/detection/test_question_detector.py` — recorded-speech regression tests and existing lifecycle assertions.
+- Modify: `tests/core/test_main.py` — detector factory course-profile wiring test.
 - Modify: `README.md` — document the answerable-question boundary and conservative filtering.
 - Create: `docs/superpowers/specs/2026-09-29-question-detection-design.md` — approved design, already committed in `9334f36`.
 - Create: `tmp/eval_marxism_tail_40m_question_filter.json` — ignored offline evidence report; never commit audio, API keys, or generated reports.
@@ -25,7 +25,7 @@
 
 **Files:**
 
-- Modify: `tests/test_question_detector.py`
+- Modify: `tests/detection/test_question_detector.py`
 
 - [ ] **Step 1: Add tests for lecture, management, confirmation, extraction, and partial stability**
 
@@ -126,7 +126,7 @@ def test_confirmation_with_a_textbook_proposition_is_answerable():
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_question_detector.py -q
+.\.venv\Scripts\python.exe -m pytest tests/detection/test_question_detector.py -q
 ```
 
 Expected: the new tests fail because the current detector treats embedded `什么是`, management/confirmation speech, full lecture prefixes, and unsafe partials as candidates; the existing lifecycle tests should remain green.
@@ -232,7 +232,7 @@ if not normalized_text or not self._is_answerable(event, normalized_text):
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_question_detector.py -q
+.\.venv\Scripts\python.exe -m pytest tests/detection/test_question_detector.py -q
 ```
 
 Expected: all detector tests pass, including the new recording-derived cases. Do not loosen the filter to make an unrelated test pass; update the specific extraction or classification rule instead.
@@ -243,7 +243,7 @@ Expected: all detector tests pass, including the new recording-derived cases. Do
 
 - Modify: `src/classbot/main.py`
 - Modify: `tmp/evaluate_recordings.py`
-- Modify: `tests/test_main.py`
+- Modify: `tests/core/test_main.py`
 
 - [ ] **Step 1: Add a failing factory wiring test**
 
@@ -265,7 +265,7 @@ def test_default_detector_loads_selected_course_hotwords(monkeypatch):
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_main.py::test_default_detector_loads_selected_course_hotwords -q
+.\.venv\Scripts\python.exe -m pytest tests/core/test_main.py::test_default_detector_loads_selected_course_hotwords -q
 ```
 
 Expected: FAIL because `_make_detector` currently constructs `QuestionDetector(subject)` without the course profile.
@@ -279,7 +279,7 @@ Update `_make_detector` to load `CLASSBOT_COURSE` and pass `profile.hotwords`. I
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_main.py tests/test_runtime.py tests/test_pipeline.py -q
+.\.venv\Scripts\python.exe -m pytest tests/core/test_main.py tests/core/test_runtime.py tests/pipeline/test_pipeline.py -q
 ```
 
 Expected: PASS. Existing dependency-injection factories that accept only `subject` must remain untouched; only the default production factory loads hotwords.
@@ -330,8 +330,8 @@ After all checks and the recording report are complete, stage only the source/te
 
 ```powershell
 git add src/classbot/question_detector.py src/classbot/main.py `
-  tmp/evaluate_recordings.py tests/test_question_detector.py `
-  tests/test_main.py README.md
+  tmp/evaluate_recordings.py tests/detection/test_question_detector.py `
+  tests/core/test_main.py README.md
 git commit -m "feat: filter classroom question candidates"
 ```
 

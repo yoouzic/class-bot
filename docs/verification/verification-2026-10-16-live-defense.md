@@ -500,9 +500,9 @@ SHA 和修正后的判定：Bell 失败，第一子问未命中原要求来源�
 三项跳过随后在相同提升环境定向复核，结果仍为 3 skipped，0.14 秒，目录
 `tmp/pytest-link-skip-confirm-v9`：
 
-- `tests/test_cache_path_validation.py::test_real_source_symlink_outside_library_is_rejected`：该 Windows 账户无法创建符号链接。
-- `tests/test_knowledge.py::test_outside_links_are_not_indexed`：同一符号链接权限限制。
-- `tests/test_vector_pruning.py::test_symbolic_links_are_not_pruned`：符号链接不可用。
+- `tests/knowledge/test_cache_path_validation.py::test_real_source_symlink_outside_library_is_rejected`：该 Windows 账户无法创建符号链接。
+- `tests/knowledge/test_knowledge.py::test_outside_links_are_not_indexed`：同一符号链接权限限制。
+- `tests/knowledge/test_vector_pruning.py::test_symbolic_links_are_not_pruned`：符号链接不可用。
 
 这些真实链接用例未在本机执行通过；没有修改系统链接权限来隐藏跳过，其他相关
 边界回归通过不等于这三项已获得原生覆盖。

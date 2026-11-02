@@ -28,8 +28,8 @@
 
 ## 测试
 
-- `tests/test_offline_refiner.py`：缓存校验、别名首下载、损坏权重不换、热词参数、无流式参数、预热成功/失败（失败保持未加载以便回退）、加载幂等。
-- `tests/test_funasr_streaming.py` 新增：已加载走离线精修（不触发流式整段重解码、纠错表仍生效）、未加载回退流式、离线失败回退流式、会话启动后台预热、`final_refinement=false` 不预热、stop 取消后台加载。
+- `tests/asr/test_offline_refiner.py`：缓存校验、别名首下载、损坏权重不换、热词参数、无流式参数、预热成功/失败（失败保持未加载以便回退）、加载幂等。
+- `tests/asr/test_funasr_streaming.py` 新增：已加载走离线精修（不触发流式整段重解码、纠错表仍生效）、未加载回退流式、离线失败回退流式、会话启动后台预热、`final_refinement=false` 不预热、stop 取消后台加载。
 - 全量：`python -m pytest -q` 共 **1147 passed, 4 skipped**；`ruff check src tests scripts` 通过；`git diff --check` 无空白错误。
 
 ## 未验证项（下一步）

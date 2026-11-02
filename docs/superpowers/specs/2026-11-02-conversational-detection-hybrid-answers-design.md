@@ -526,23 +526,23 @@ source_refs: tuple[SourceRef, ...] = ()
 
 ### 单元测试
 
-- `tests/test_spoken_text.py`
+- `tests/detection/test_spoken_text.py`
   - 填充词、单字/短语重复、自我纠正、普通否定不误伤、叠词白名单、数字/标识符保留。
-- `tests/test_question_detector.py`
+- `tests/detection/test_question_detector.py`
   - 短问句、追问上下文、卡壳修复；现有 170 条评测不退化。
-- `tests/test_defense_detector.py`
+- `tests/detection/test_defense_detector.py`
   - 答辩卡壳、重说、追问；管理/寒暄/陈述不误报。
-- `tests/test_web_search.py`
+- `tests/llm/test_web_search.py`
   - Search、Fetch、自动深度、超时、URL 校验、无 key 降级、杀开关。
-- `tests/test_source_tags.py`
+- `tests/sources/test_source_tags.py`
   - 未知编号、漏标、全角标签、相邻标签、澄清回答豁免。
-- `tests/test_source_rendering.py`
+- `tests/ui/test_source_rendering.py`
   - 中文短标签、相邻合并、颜色、代码文件名、HTML 转义、纯文本回退。
-- `tests/test_deepseek_client.py`
+- `tests/llm/test_deepseek_client.py`
   - 课堂本地充足不联网、本地+网络混合、纯网络、纯通识；答辩 supported 不联网、partial/insufficient 混合、网络补充校验失败回退。
-- `tests/test_pipeline.py`
+- `tests/pipeline/test_pipeline.py`
   - `source_refs` 写入、审计、notice。
-- `tests/test_main_window.py`
+- `tests/ui/test_main_window.py`
   - 富文本渲染、来源图例、notice、HTML 注入防护。
 
 ### 集成与人工验证
