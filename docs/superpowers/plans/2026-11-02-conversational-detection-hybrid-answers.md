@@ -1737,11 +1737,13 @@ def test_card_with_source_refs_uses_chinese_labels_and_legend(window):
 
 
 def test_card_notice_and_html_escape(window):
+    ref = SourceRef("S1", SourceKind.TEXTBOOK, "教", "PDF第1页")
     window.upsert_card(
         make_card(
             answer="<script>alert(1)</script>",
             status=CardStatus.ANSWERED,
             notice="有 1 句未标注来源",
+            source_refs=(ref,),
         )
     )
     widget = window.cards_list.itemWidget(window.cards_list.item(0))
