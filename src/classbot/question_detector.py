@@ -215,7 +215,8 @@ _SHORT_ACK_STEMS = frozenset(
     {
         "好", "好的", "好吧", "那好", "行", "可以", "可以的", "是", "是的",
         "对", "对的", "这样", "就这样", "先这样", "继续", "我们继续",
-        "好的吧", "是这样的",
+        "好的吧", "是这样的", "好了", "行了", "可以了", "对了", "是了",
+        "是这样", "是那样",
     }
 )
 # 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
@@ -294,7 +295,13 @@ def _is_particle_question(
         return True
     if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
         return True
-    return any(cue in stem for cue in _SHORT_CONTENT_CUES)
+    if tail == "吗":
+        return any(cue in stem for cue in _SHORT_CONTENT_CUES)
+    # A bare "呢" such as "我们讲完了呢" is usually narration; one-character
+    # cues ("讲" in "讲完了") are too weak without the 吗 tail.
+    return any(
+        len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
+    )
 
 
 def _is_short_question(
@@ -1010,7 +1017,10 @@ class QuestionDetector:
             # In running speech this is often a confirmation followed by more
             # lecture, not a completed yes/no proposition. Recheck the final.
             return False
-        if _MANAGEMENT_RE.search(normalized_text):
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        ):
             return False
 
         if normalized_text.endswith(_COMPREHENSION_TAILS):
