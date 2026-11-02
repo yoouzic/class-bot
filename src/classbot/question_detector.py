@@ -182,19 +182,36 @@ _CONFIRMATION_ONLY = ("对不对", "对吧", "是吧", "答案不就在这里吗
 _CONFIRMATION_RE = re.compile(
     r"(?:对不对|对吧|是吧|答案不就在这里)(?:[\u4e00-\u9fff]{0,6})?$"
 )
-_PARTICLE_TAILS = ("呢", "吗")
-_FOLLOWUP_STARTS = (
-    "那", "那么", "还有", "另外", "换成", "如果",
-    "这个", "它", "他们", "她们",
-)
+_PARTICLE_TAILS = ("呢", "吗", "呀", "啊", "吧", "来着")
+_FILLER_PARTICLE_TAILS = ("呀", "啊", "吧", "来着")
 _CONTEXT_QUESTION_SIGNALS = (
     "什么", "哪", "谁", "为什么", "为何", "如何", "怎么",
     "多少", "多久", "是否", "有没有", "是不是", "能不能",
     "可不可以", "会不会",
 )
+_SHORT_CONTENT_CUES = (
+    "支持", "部署", "需要", "可以", "能", "有", "是", "会", "要", "用",
+    "做", "实现", "调用", "安装", "运行", "配置", "可行", "复杂", "区别",
+    "风险", "效果", "性能", "版本", "接口", "数据", "模型", "方案", "功能",
+    "步骤", "参数", "准确率", "召回率", "指标", "延迟", "内存", "显存",
+    "训练", "测试", "实验", "结果", "原因", "原理", "定义", "作用", "流程",
+)
+_SHORT_MANAGEMENT_RE = re.compile(
+    r"(?:能?听(?:见|得到|得见)|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|共享屏幕|摄像头|"
+    r"点(?:个)?名|到齐|来齐|安静|休息|明白|听懂|清楚|懂|看到|看见)"
+    r"(?:了|好了|一下|清楚|好)?(?:吗|呀|啊|吧|呢)?$"
+)
+_GREETING_RE = re.compile(
+    r"^(?:你好|大家好|各位好|老师好|早上好|晚上好|最近好吗|吃了吗|辛苦了|谢谢)"
+)
 # 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
 _DISCOURSE_CONTINUATION_PREFIXES = (
     "因为", "所以", "但是", "可是", "然后", "而且", "不过",
+)
+# 含这些词时是在把话题往后推，不是在追问当前问题。
+_DISCOURSE_CONTINUATION_MARKERS = (
+    "等一下", "等会", "后面", "稍后", "再讲", "再说", "先讲",
+    "再讨论", "下一个", "继续看", "继续讲",
 )
 
 
@@ -207,30 +224,55 @@ def _is_particle_question(
         return False
     if normalized_text.endswith("着呢"):
         return False
-    if _MANAGEMENT_RE.search(normalized_text) or _CONFIRMATION_RE.search(
-        normalized_text
+    if (
+        _MANAGEMENT_RE.search(normalized_text)
+        or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        or _GREETING_RE.search(normalized_text)
+        or _CONFIRMATION_RE.search(normalized_text)
     ):
         return False
-    if normalized_text.endswith("吗"):
-        return len(normalized_text) >= 4
-    if has_context:
-        return len(normalized_text) >= 2
     if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
         return False
-    return len(normalized_text) >= 5 and (
-        "的" in normalized_text
-        or normalized_text.startswith(
-            ("这个", "那个", "它", "他们", "她们")
+    if any(
+        marker in normalized_text
+        for marker in _DISCOURSE_CONTINUATION_MARKERS
+    ):
+        return False
+    stem = normalized_text
+    for tail in _PARTICLE_TAILS:
+        if stem.endswith(tail):
+            stem = stem[: -len(tail)]
+            break
+    if has_context:
+        if len(normalized_text) == 2 and normalized_text not in {
+            "它呢", "他呢", "她呢",
+        }:
+            return False
+        return len(normalized_text) >= 2
+    if len(normalized_text) < 5:
+        return False
+    if "的" in normalized_text or normalized_text.startswith(
+        ("这个", "那个", "它", "他们", "她们")
+    ):
+        return True
+    if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
+        return True
+    if normalized_text.endswith(("呀", "啊", "吧")):
+        # 呀/啊/吧 also end ordinary statements; one-character cues such as
+        # "有" inside "所有之上" are too weak to prove a question.
+        return any(
+            len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
         )
-    )
+    return any(cue in stem for cue in _SHORT_CONTENT_CUES)
 
 
 def _is_short_question(
     normalized_text: str,
     *,
     has_context: bool,
+    minimum_length: int,
 ) -> bool:
-    if len(normalized_text) >= 7:
+    if len(normalized_text) >= minimum_length:
         return False
     return _is_particle_question(normalized_text, has_context=has_context)
 
@@ -432,6 +474,24 @@ def _normalized_clause(text: str) -> str:
     return normalize_text(text)
 
 
+def _restore_trailing_particle(raw_clause: str, normalized_clause: str) -> str:
+    """Re-attach a 呀/啊/吧 that filler stripping removed from a short clause.
+
+    In a long clause these characters are discourse fillers, not question
+    particles, so only short clauses are restored.
+    """
+    if len(normalized_clause) >= 10:
+        return normalized_clause
+    if any(
+        normalized_clause.endswith(ending) for ending in QUESTION_ENDINGS
+    ):
+        return normalized_clause
+    raw_normalized = normalize_text(raw_clause)
+    if raw_normalized and raw_normalized[-1] in {"呀", "啊", "吧"}:
+        return normalized_clause + raw_normalized[-1]
+    return normalized_clause
+
+
 def _has_teaching_lead(text: str) -> bool:
     return bool(
         re.search(r"(?:学习|了解|讲解|介绍|掌握|回顾)(?:了|过)?", text)
@@ -493,37 +553,44 @@ def _looks_like_question_clause(
         return False
     if QuestionDetector._has_question_mark(raw_clause):
         return True
-    if QuestionDetector._has_question_ending(
+    particle_text = normalized_clause
+    has_ending = QuestionDetector._has_question_ending(
         raw_clause, normalized_clause
-    ):
-        if not is_final and normalized_clause.endswith(
+    )
+    if not has_ending:
+        # 呀/啊/吧 were stripped as fillers; a short clause may still end in
+        # one as a question particle ("支持中文呀").
+        particle_text = _restore_trailing_particle(raw_clause, normalized_clause)
+        has_ending = particle_text != normalized_clause
+    if has_ending:
+        if not is_final and particle_text.endswith(
             _INCOMPLETE_PARTIAL_TAILS
         ):
             return False
-        if normalized_clause.endswith("着呢"):
+        if particle_text.endswith("着呢"):
             # "放着呢/坐着呢" is a continuative state, not a question 呢.
             return False
         if (
-            normalized_clause.endswith(_TRAILING_QUESTION_PARTICLES)
+            particle_text.endswith(_TRAILING_QUESTION_PARTICLES)
             and not any(
-                signal in normalized_clause
+                signal in particle_text
                 for signal in _PARTICLE_QUESTION_SIGNALS
             )
-            and len(normalized_clause) < 10
+            and len(particle_text) <= 10
             and not _is_particle_question(
-                normalized_clause, has_context=has_context
+                particle_text, has_context=has_context
             )
         ):
             # A bare "…吗/呢" tail on a short clause is usually a filler or
             # confirmation; a longer one ("…支持中文吗") is a real question.
             return False
-        if normalized_clause.endswith("什么") and normalized_clause.count(
+        if particle_text.endswith("什么") and particle_text.count(
             "什么"
         ) > 1:
             return False
         return not (
             _has_teaching_lead(original_text)
-            and normalized_clause.startswith(("什么是", "什么样的"))
+            and particle_text.startswith(("什么是", "什么样的"))
         )
 
     if normalized_clause.startswith(
@@ -748,6 +815,7 @@ def _extract_question_text(
             clause, normalized, text,
             is_final=is_final, has_context=has_context,
         ):
+            normalized = _restore_trailing_particle(clause, normalized)
             normalized = _trim_teacher_answer(normalized)
             return _extract_recent_academic_span(normalized, hotwords)
         span = _extract_recent_academic_span(normalized, hotwords)
@@ -797,7 +865,16 @@ class QuestionDetector:
         )
         context = self._context_for(event.text, normalized_text)
         short_question = _is_short_question(
-            normalized_text, has_context=bool(context)
+            normalized_text,
+            has_context=bool(context),
+            minimum_length=self.minimum_length,
+        )
+        particle_question = (
+            len(normalized_text) <= 10
+            and normalized_text.endswith(_FILLER_PARTICLE_TAILS)
+            and _is_particle_question(
+                normalized_text, has_context=bool(context)
+            )
         )
         segment_id = self._segment_id_for(event)
         signature = (
@@ -808,7 +885,9 @@ class QuestionDetector:
             segment_id,
             self._has_question_mark(event.text),
         )
-        confidence = self._score(event, normalized_text)
+        confidence = self._score(
+            event, normalized_text, particle_question=particle_question
+        )
         if signature in self._recent_events:
             if event.is_final and (
                 len(normalized_text) < self.minimum_length
@@ -981,23 +1060,30 @@ class QuestionDetector:
 
     @staticmethod
     def _is_context_eligible(normalized_text: str) -> bool:
-        if len(normalized_text) < 8:
-            return (
-                len(normalized_text) >= 4
-                and (
-                    normalized_text.endswith(("吗", "呢", "呀", "啊"))
-                    or any(
-                        signal in normalized_text
-                        for signal in _CONTEXT_QUESTION_SIGNALS
-                    )
-                )
-                and not normalized_text.endswith("着呢")
-                and not _MANAGEMENT_RE.search(normalized_text)
-                and not _CONFIRMATION_RE.search(normalized_text)
-            )
-        if _MANAGEMENT_RE.search(normalized_text):
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+            or _GREETING_RE.search(normalized_text)
+            or _CONFIRMATION_RE.search(normalized_text)
+        ):
             return False
-        return not _CONFIRMATION_RE.search(normalized_text)
+        if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+            return False
+        if any(
+            marker in normalized_text
+            for marker in _DISCOURSE_CONTINUATION_MARKERS
+        ):
+            return False
+        if len(normalized_text) < 8:
+            if len(normalized_text) < 4:
+                return False
+            if _is_particle_question(normalized_text, has_context=False):
+                return True
+            return any(
+                signal in normalized_text
+                for signal in _CONTEXT_QUESTION_SIGNALS
+            )
+        return True
 
     @staticmethod
     def _is_choice_question(normalized_text: str) -> bool:
@@ -1032,9 +1118,17 @@ class QuestionDetector:
             self._active_questions.popitem(last=False)
 
     @classmethod
-    def _score(cls, event: TranscriptEvent, normalized_text: str) -> float:
+    def _score(
+        cls,
+        event: TranscriptEvent,
+        normalized_text: str,
+        *,
+        particle_question: bool = False,
+    ) -> float:
         has_strong_marker = cls._has_strong_marker(normalized_text)
-        has_ending_particle = normalized_text.endswith(QUESTION_PARTICLES)
+        has_ending_particle = (
+            normalized_text.endswith(QUESTION_PARTICLES) or particle_question
+        )
         has_question_mark = cls._has_question_mark(event.text)
         if (
             has_strong_marker

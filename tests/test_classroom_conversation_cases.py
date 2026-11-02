@@ -29,6 +29,22 @@ STANDALONE_CASES = [
     ("我是说，这个接口怎么调用", True),
     ("这个这个", False),
     ("呃", False),
+    ("支持中文呀", True),
+    ("部署复杂吧", True),
+    ("这个方案可行啊", True),
+    ("这个接口来着", True),
+    ("能听见吗", False),
+    ("声音清楚吗", False),
+    ("看到屏幕了吗", False),
+    ("共享屏幕了吗", False),
+    ("麦克风好了吗", False),
+    ("人来齐了吗", False),
+    ("点个名好吗", False),
+    ("大家安静好吗", False),
+    ("先休息好吗", False),
+    ("明白了吗", False),
+    ("最近好吗", False),
+    ("说他在所有之上啊", False),
 ]
 
 CONTEXT_CASES = [
@@ -42,6 +58,13 @@ CONTEXT_CASES = [
     ("打开教材", "这个呢", False),
     ("模型效果怎么样", "这个这个", False),
     ("模型效果怎么样", "呃", False),
+    ("支持离线使用吗", "召回率呀", True),
+    ("支持离线使用吗", "召回率吧", True),
+    ("支持离线使用吗", "因为我现在的关系呢", False),
+    ("支持离线使用吗", "这个我们等一下再讲呢", False),
+    ("支持离线使用吗", "好呢", False),
+    ("支持离线使用吗", "讲呢", False),
+    ("后面再讲呢", "这个呢", False),
 ]
 
 
@@ -58,3 +81,14 @@ def test_classroom_context_cases(seed, text, expected):
     detector.feed(TranscriptEvent(text=seed, is_final=True, segment_id=1))
     event = TranscriptEvent(text=text, is_final=True, segment_id=2)
     assert bool(detector.feed(event)) is expected
+
+
+def test_context_is_attached_to_followup():
+    detector = QuestionDetector("历史")
+    detector.feed(
+        TranscriptEvent(text="支持离线使用吗", is_final=True, segment_id=1)
+    )
+    candidate = detector.feed(
+        TranscriptEvent(text="这个呢", is_final=True, segment_id=2)
+    )[0]
+    assert "支持离线使用吗" in candidate.context
