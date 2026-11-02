@@ -2504,7 +2504,7 @@ async def test_classroom_high_coverage_skips_web(monkeypatch):
         deepseek_module, "load_course_profile", lambda _course_id: profile
     )
 
-    async def fail_web_search(query):
+    async def fail_web_search(self, query):
         raise AssertionError("high coverage must not search the web")
 
     monkeypatch.setattr(DeepSeekClient, "_web_search", fail_web_search)
@@ -2530,6 +2530,14 @@ async def test_classroom_high_coverage_skips_web(monkeypatch):
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
+        prepared = await client.prepare_answer(
+            "物质和意识的关系是什么", settings.subject
+        )
+        assert [ref.id for ref in prepared.source_refs] == ["S1", "G"]
+        assert prepared.sources == (
+            "教材：第2页",
+            "通识：模型内部知识（未检索）",
+        )
         chunks = await _answer_chunks(
             client, "物质和意识的关系是什么", settings.subject
         )
@@ -2579,6 +2587,15 @@ async def test_classroom_low_coverage_uses_local_and_web(monkeypatch):
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
+        prepared = await client.prepare_answer(
+            "随机森林的泛化性怎么样", settings.subject
+        )
+        assert [ref.id for ref in prepared.source_refs] == ["S1", "W1", "G"]
+        assert prepared.sources == (
+            "教材：第2页",
+            "网络检索：随机森林简介 https://example.com/rf",
+            "通识：模型内部知识（未检索）",
+        )
         await _answer_chunks(client, "随机森林的泛化性怎么样", settings.subject)
 
     assert '"id": "S1"' in captured["user"]
@@ -2590,9 +2607,55 @@ Add a no-candidate general test:
 
 ```python
 @pytest.mark.asyncio
+async def test_classroom_time_sensitive_question_triggers_web(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    profile = CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第2页] 物质决定意识，意识对物质具有能动的反作用。",
+        ),
+    )
+    monkeypatch.setenv("CLASSBOT_COURSE", "demo")
+    monkeypatch.setattr(
+        deepseek_module, "load_course_profile", lambda _course_id: profile
+    )
+    from classbot.llm.web_search import WebResult
+
+    calls = {"web": 0}
+
+    async def fake_web_search(self, query):
+        calls["web"] += 1
+        return (
+            WebResult(
+                title="最新资料",
+                url="https://example.com/new",
+                snippet="最新摘要。",
+            ),
+        )
+
+    monkeypatch.setattr(DeepSeekClient, "_web_search", fake_web_search)
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        prepared = await client.prepare_answer(
+            "物质决定意识的最新研究是哪一年", settings.subject
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert calls["web"] == 1
+    assert [ref.id for ref in prepared.source_refs] == ["S1", "W1", "G"]
+    assert "最新资料" in prepared.sources[1]
+
+
+@pytest.mark.asyncio
 async def test_classroom_without_candidates_requires_general_tag(monkeypatch):
     monkeypatch.setenv("CLASSBOT_COURSE", "")
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    web_calls = {"count": 0}
+
     async def fake_web_search(self, query):
+        web_calls["count"] += 1
         return ()
     monkeypatch.setattr(DeepSeekClient, "_web_search", fake_web_search)
     captured = {}
@@ -2613,9 +2676,16 @@ async def test_classroom_without_candidates_requires_general_tag(monkeypatch):
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
+        prepared = await client.prepare_answer(
+            "一个没有资料的问题", settings.subject
+        )
+        assert [ref.id for ref in prepared.source_refs] == ["G"]
+        assert prepared.sources == ("通识：模型内部知识（未检索）",)
+        assert web_calls["count"] == 1
         chunks = await _answer_chunks(client, "一个没有资料的问题", settings.subject)
 
     assert chunks == ["无法确定[G]"]
+    assert web_calls["count"] == 2
     assert "本地材料候选" in captured["user"]
     assert "网络检索候选" in captured["user"]
     assert "[G]" in captured["system"]
@@ -2751,7 +2821,7 @@ Replace the classroom branch of `prepare_answer` with:
             f"教材：{record.page_label or '教材片段'}" for record in records
         ) + tuple(
             f"网络检索：{result.title} {result.url}" for result in web_results
-        ) + ("通识：模型内部知识（未检索）",)
+        ) + (f"通识：{build_general_source_ref().detail}",)
 
         user_content = (
             f"学科：{subject}\n问题：{question}\n\n"
