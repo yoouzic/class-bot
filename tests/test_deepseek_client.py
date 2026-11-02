@@ -1010,14 +1010,16 @@ async def test_defense_web_fallback_runs_only_after_insufficient_verdict(monkeyp
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        assert "网络检索参考" in payload["messages"][0]["content"]
-        assert "不得把网络内容说成本地资料的事实" in payload["messages"][0]["content"]
+        assert "网络补充" in payload["messages"][0]["content"]
+        assert "不得描述" in payload["messages"][0]["content"]
         assert "example.com/ref" in payload["messages"][1]["content"]
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
             content=(
-                'data: {"choices": [{"delta": {"content": "本地资料未命中，网络参考要点。"}}]}\n'
+                'data: {"choices": [{"delta": {"content": '
+                '"{\\"claims\\":[{\\"text\\":\\"网络参考要点。\\",'
+                '\\"web_ids\\":[\\"W1\\"]}]}"}}]}\n'
                 "data: [DONE]\n"
             ),
         )
@@ -1041,8 +1043,9 @@ async def test_defense_web_fallback_runs_only_after_insufficient_verdict(monkeyp
         )
         assert calls == {"grounded": 1, "web": 1}
         assert fallback.status == "web_fallback"
-        assert fallback.text.startswith("【网络检索参考】")
-        assert "网络参考要点" in fallback.text
+        assert fallback.text.startswith("【本地资料】未找到直接依据。")
+        assert "网络参考要点。[W1]" in fallback.text
+        assert [ref.id for ref in fallback.source_refs] == ["W1"]
 
         async def fake_supported(question, subject, *, prepared):
             calls["grounded"] += 1
@@ -1050,7 +1053,127 @@ async def test_defense_web_fallback_runs_only_after_insufficient_verdict(monkeyp
 
         monkeypatch.setattr(client, "grounded_answer", fake_supported)
         supported = await client.grounded_answer_with_web_fallback(
-            "命中问题", "学科", prepared=PreparedAnswer([], ()),
+            "我们命中问题", "学科", prepared=PreparedAnswer([], ()),
         )
         assert calls == {"grounded": 2, "web": 1}
         assert supported.status == "supported"
+        assert supported.text == "已核验答案"
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_web_supplement_is_hybrid(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+    calls = {"web": 0}
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", ({"text": "本地结论。"},),
+            (local_ref,),
+        )
+
+    async def fake_web_search(query):
+        calls["web"] += 1
+        return (
+            WebResult(
+                title="一般背景",
+                url="https://example.com/bg",
+                snippet="一般背景摘要。",
+            ),
+        )
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert "网络补充" in payload["messages"][0]["content"]
+        assert "项目事实" in payload["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": '
+                '"{\\"claims\\":[{\\"text\\":\\"一般背景要点。\\",'
+                '\\"web_ids\\":[\\"W1\\"]}]}"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web_search)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个方案的一般原理是什么", "学科",
+            prepared=PreparedAnswer([], ()),
+        )
+
+    assert calls["web"] == 1
+    assert result.status == "hybrid"
+    assert result.text.startswith("【资料事实】本地结论。")
+    assert "【网络补充】" in result.text
+    assert "一般背景要点。[W1]" in result.text
+    assert [ref.id for ref in result.source_refs] == ["S1", "W1"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_defense_answer_builds_code_source_refs(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from types import SimpleNamespace
+
+    code = tmp_path / "src" / "solve_model.py"
+    code.parent.mkdir()
+    code.write_text("print(1)", encoding="utf-8")
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return (
+                SimpleNamespace(
+                    source="src/solve_model.py · L10-L24",
+                    text="def solve_model(): ...",
+                    path=code,
+                    locator="L10-L24",
+                ),
+            )
+
+    settings = _settings()
+    http_client = httpx.AsyncClient(base_url=settings.base_url)
+    client = DeepSeekClient(
+        settings,
+        http_client=http_client,
+        scenario=_Scenario(),
+        knowledge_index=_Index(),
+    )
+    prepared = await client.prepare_answer_with_local_context(
+        "这个函数做什么", "答辩", local_context=""
+    )
+    await client.aclose()
+    await http_client.aclose()
+
+    ref = prepared.source_refs[0]
+    assert ref.short_label == "solve_model.py"
+    assert ref.detail == f"{code.resolve()} · L10-L24"
+    assert ref.path == str(code.resolve())

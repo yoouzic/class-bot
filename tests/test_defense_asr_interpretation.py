@@ -11,6 +11,12 @@ from classbot.llm.deepseek_client import DeepSeekClient
 from classbot.pipeline import LivePipeline
 
 
+@pytest.fixture(autouse=True)
+def _web_search_off(monkeypatch):
+    """This wire-contract test stays offline; web supplements have their own tests."""
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("excerpts", [
     ("本接口唯一命名的变换是 FFT；是否处理 32 ms 数据需另查规则。",),
