@@ -767,7 +767,7 @@ git diff --check
 - Consumes: `normalize_spoken_text` from Task 1.
 - Produces: `DefenseQuestionDetector.feed()` 对重说、日常问法、追问的识别；`QuestionCandidate.confidence` 为轻量规则分。
 
-- [ ] **Step 1: 写答辩回归用例（25 条 + 1 上下文用例）**
+- [ ] **Step 1: 写答辩回归用例（29 条 + 1 上下文用例）**
 
 Create `tests/test_defense_conversation_cases.py`:
 
@@ -801,6 +801,10 @@ STANDALONE_CASES = [
     ("网络有点卡", False),
     ("这个模型——不对，这个方法的泛化性怎么样", True),
     ("我们用的——呃——随机森林的准确率是多少", True),
+    ("谢谢老师，请问这个方案为什么选随机森林", True),
+    ("你好，请介绍一下你们的创新点", True),
+    ("谢谢，我想问一下你们的实验数据可靠吗", True),
+    ("呃", False),
     ("不对", False),
     ("我是说", False),
     ("那不是我们的方案", False),
@@ -866,6 +870,7 @@ _INCOMPLETE = re.compile(
 ```python
 _SMALL_TALK = re.compile(
     r"^(?:你好|大家好|早上好|晚上好|谢谢|多谢|辛苦了|再见|拜拜|吃了吗|最近怎么样)"
+    r"[。！？!?，,\s]*$"
 )
 ```
 
