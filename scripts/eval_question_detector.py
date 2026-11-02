@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from classbot.course import load_course_profile
+from classbot.defense_detector import DefenseQuestionDetector
 from classbot.domain import TranscriptEvent
 from classbot.question_detector import QuestionDetector
 
@@ -28,6 +29,9 @@ def main() -> int:
     parser.add_argument("--sample", required=True)
     parser.add_argument("--labels", required=True)
     parser.add_argument("--course", default="marxism_basic_principles_2023")
+    parser.add_argument(
+        "--detector", choices=("classroom", "defense"), default="classroom"
+    )
     args = parser.parse_args()
 
     sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))
@@ -40,9 +44,12 @@ def main() -> int:
         label = labels.get(str(index))
         if label is None:
             continue
-        detector = QuestionDetector(
-            "马克思主义基本原理", hotwords=profile.hotwords,
-        )
+        if args.detector == "defense":
+            detector = DefenseQuestionDetector("答辩")
+        else:
+            detector = QuestionDetector(
+                "马克思主义基本原理", hotwords=profile.hotwords,
+            )
         event = TranscriptEvent(
             text=item["clause"],
             is_final=True,
