@@ -2960,6 +2960,13 @@ def test_parse_web_supplement_rejects_inline_tags():
     assert parse_web_supplement(raw, {"W1"}) == ()
 
 
+def test_parse_web_supplement_rejects_fullwidth_and_lowercase_tags():
+    fullwidth = '{"claims":[{"text":"一般背景［W1］。","web_ids":["W1"]}]}'
+    lowercase = '{"claims":[{"text":"一般背景[w1]。","web_ids":["W1"]}]}'
+    assert parse_web_supplement(fullwidth, {"W1"}) == ()
+    assert parse_web_supplement(lowercase, {"W1"}) == ()
+
+
 def test_parse_web_supplement_rejects_bad_shape_and_empty_claims():
     assert parse_web_supplement('{"claims":[]}', {"W1"}) == ()
     assert parse_web_supplement('{"claims":[{"text":"x"}]}', {"W1"}) == ()
@@ -3044,6 +3051,206 @@ async def test_defense_partial_web_supplement_is_hybrid(monkeypatch):
     assert "【网络补充】" in result.text
     assert "一般背景要点。[W1]" in result.text
     assert [ref.id for ref in result.source_refs] == ["S1", "W1"]
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_network_failure_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.grounding import GroundedAnswer
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def empty_web(query):
+        return ()
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", empty_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+    assert [ref.id for ref in result.source_refs] == ["S1"]
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_invalid_supplement_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def fake_web(query):
+        return (
+            WebResult("一般背景", "https://example.com/bg", "摘要"),
+        )
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": "{\\"claims\\":[]}"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_supplement_exception_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.deepseek_client import DeepSeekStreamError
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def fake_web(query):
+        return (
+            WebResult("一般背景", "https://example.com/bg", "摘要"),
+        )
+
+    async def fail_supplement(*args, **kwargs):
+        raise DeepSeekStreamError("supplement failed")
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+
+
+@pytest.mark.asyncio
+async def test_defense_speculative_web_starts_before_grounding(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.llm.grounding import GroundedAnswer
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    web_started = asyncio.Event()
+
+    async def fake_web(query):
+        web_started.set()
+        return ()
+
+    async def fake_grounded(question, subject, *, prepared):
+        await asyncio.wait_for(web_started.wait(), 1)
+        return GroundedAnswer("本地答案", "supported", (), ())
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert web_started.is_set()
+    assert result.status == "supported"
 ```
 
 - [ ] **Step 3: 运行测试，确认失败**
@@ -3084,9 +3291,12 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
-_TAG = re.compile(r"[\[【〔]\s*(?:S\d+|W\d+|G)\s*[\]】〕]")
+_TAG = re.compile(
+    r"[\[【〔]\s*(?:S\d+|W\d+|G)\s*[\]】〕]", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3118,7 +3328,7 @@ def parse_web_supplement(
         ids = claim["web_ids"]
         if not isinstance(text, str) or not text.strip() or len(text) > 400:
             return ()
-        if _TAG.search(text):
+        if _TAG.search(unicodedata.normalize("NFKC", text)):
             return ()
         if not isinstance(ids, list) or not 1 <= len(ids) <= 3:
             return ()
@@ -3328,7 +3538,7 @@ Place this after the existing `sources.append(display_source)` and before `user_
                     web_results = await web_task
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception:  # noqa: BLE001 - optional web search must not fail the local answer
                     web_results = ()
             elif web_enabled:
                 web_results = await self._web_search(question)
@@ -3336,7 +3546,7 @@ Place this after the existing `sources.append(display_source)` and before `user_
                 web_results = ()
 
             if not web_results:
-                if verified.status == "insufficient" and web_enabled:
+                if web_enabled and verified.status in {"partial", "insufficient"}:
                     return replace(
                         verified,
                         text=verified.text
@@ -3350,11 +3560,16 @@ Place this after the existing `sources.append(display_source)` and before `user_
                 )
                 for index, result in enumerate(web_results, 1)
             )
-            claims = await self._web_supplement(
-                question, verified, web_results, web_refs
-            )
+            try:
+                claims = await self._web_supplement(
+                    question, verified, web_results, web_refs
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional web supplement must not discard a local partial answer
+                claims = ()
             if not claims:
-                if verified.status == "insufficient" and web_enabled:
+                if web_enabled and verified.status in {"partial", "insufficient"}:
                     return replace(
                         verified,
                         text=verified.text
