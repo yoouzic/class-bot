@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
 import os
 import re
+import time
 from dataclasses import dataclass, replace
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -222,7 +224,7 @@ def timeout_from_env(name: str, default: float) -> float:
         value = float(os.getenv(name, ""))
     except ValueError:
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 async def search_web(
@@ -232,15 +234,30 @@ async def search_web(
     api_key: str | None = None,
     limit: int = 4,
     timeout: float = 6.0,
+    total_budget: float | None = None,
 ) -> tuple[WebResult, ...]:
     """DeepSeek Search first, then keyless providers; () when all fail."""
     query = " ".join(query.split())[:_QUERY_LIMIT]
     if not query:
         return ()
+    deadline = time.monotonic() + (
+        total_budget if total_budget is not None else timeout
+    )
     if api_key:
-        results = await _search_deepseek(
-            query, http_client, api_key, limit, timeout
-        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return ()
+        # A custom transport may ignore httpx's timeout, so enforce the
+        # remaining budget at the coroutine level as well.
+        per_request = min(timeout, remaining)
+        try:
+            results = await asyncio.wait_for(
+                _search_deepseek(query, http_client, api_key, limit, per_request),
+                timeout=per_request,
+            )
+        except TimeoutError:
+            _LOGGER.debug("deepseek web search exceeded the remaining budget")
+            results = ()
         if results:
             return results
     headers = {"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
@@ -248,13 +265,20 @@ async def search_web(
         ("bing", _BING_URL),
         ("duckduckgo", _DUCKDUCKGO_URL),
     ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        per_request = min(timeout, remaining)
         try:
-            response = await http_client.get(
-                url,
-                params={"q": query},
-                headers=headers,
-                timeout=timeout,
-                follow_redirects=True,
+            response = await asyncio.wait_for(
+                http_client.get(
+                    url,
+                    params={"q": query},
+                    headers=headers,
+                    timeout=per_request,
+                    follow_redirects=True,
+                ),
+                timeout=per_request,
             )
             response.raise_for_status()
             if provider == "bing":
@@ -286,6 +310,7 @@ async def research_web(
         api_key=api_key,
         limit=limit,
         timeout=search_timeout,
+        total_budget=search_timeout,
     )
     mode = fetch_mode if fetch_mode in {"auto", "off", "always"} else "auto"
     if not results or not api_key or mode == "off":
@@ -316,12 +341,11 @@ async def research_web(
         await asyncio.gather(*pending, return_exceptions=True)
     fetched: dict[str, WebResult] = {}
     for task, candidate in zip(tasks, candidates):
-        if task not in done:
+        if task not in done or task.cancelled():
             continue
-        try:
-            page = task.result()
-        except Exception:
-            page = None
+        if task.exception() is not None:
+            continue
+        page = task.result()
         if page is not None:
             fetched[candidate.url] = page
     return tuple(

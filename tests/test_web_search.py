@@ -1,12 +1,15 @@
 """Web search: DeepSeek Search API first, keyless providers as fallback."""
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import httpx
 import pytest
 
-from classbot.llm.web_search import search_web
+from classbot.llm import web_search as web_module
+from classbot.llm.web_search import fetch_web, research_web, search_web
 
 _DEEPSEEK_BODY = {
     "results": [
@@ -149,9 +152,6 @@ async def test_blank_query_skips_the_network():
     assert results == ()
 
 
-from classbot.llm import web_search as web_module
-from classbot.llm.web_search import fetch_web, research_web
-
 _FETCH_BODY = {
     "title": "页面标题",
     "url": "https://example.com/page",
@@ -281,9 +281,7 @@ async def test_research_web_fetch_failure_keeps_snippets():
 @pytest.mark.asyncio
 async def test_research_web_fetch_timeout_keeps_results(monkeypatch):
     async def slow_fetch(*args, **kwargs):
-        import asyncio
         await asyncio.sleep(1)
-        return None
 
     async def fake_search(*args, **kwargs):
         return (web_module.WebResult("结果", "https://example.com", "短"),)
@@ -301,3 +299,42 @@ async def test_research_web_fetch_timeout_keeps_results(monkeypatch):
 
     assert results[0].url == "https://example.com"
     assert results[0].fetched is False
+
+
+class _SlowTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json=_DEEPSEEK_BODY)
+
+
+@pytest.mark.asyncio
+async def test_search_web_total_budget_bounds_fallback():
+    async with httpx.AsyncClient(
+        transport=_SlowTransport(), base_url="https://api.deepseek.example"
+    ) as client:
+        started = time.monotonic()
+        results = await web_module.search_web(
+            "查询",
+            client,
+            api_key="test-key",
+            timeout=1.0,
+            total_budget=0.05,
+        )
+        elapsed = time.monotonic() - started
+    assert results == ()
+    assert elapsed < 0.5
+
+
+def test_web_env_helpers_fall_back(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_FETCH", " ALWAYS ")
+    assert web_module.fetch_mode_from_env() == "always"
+    monkeypatch.setenv("CLASSBOT_WEB_FETCH", "garbage")
+    assert web_module.fetch_mode_from_env() == "auto"
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH_TIMEOUT", "inf")
+    assert web_module.timeout_from_env(
+        "CLASSBOT_WEB_SEARCH_TIMEOUT", 1.8
+    ) == 1.8
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH_TIMEOUT", "-1")
+    assert web_module.timeout_from_env(
+        "CLASSBOT_WEB_SEARCH_TIMEOUT", 1.8
+    ) == 1.8
