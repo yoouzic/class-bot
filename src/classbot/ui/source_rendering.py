@@ -6,7 +6,9 @@ import re
 from classbot.domain import SourceKind, SourceRef
 from classbot.llm.sources import source_type_label
 
-_TAG_RUN = re.compile(r"(?:[\[【〔]\s*(?:[SW]\d+|G)\s*[\]】〕]\s*)+")
+_TAG_RUN = re.compile(
+    r"(?:[\[【〔]\s*(?:[SW]\d+|G)\s*[\]】〕](?:\s*(?=[\[【〔]))?)+"
+)
 _TAG = re.compile(r"[\[【〔]\s*([SW]\d+|G)\s*[\]】〕]")
 _LOCAL_COLOR = "#8be3ae"
 _WEB_COLOR = "#f0b45c"
@@ -55,7 +57,7 @@ def _replace_run(
 
 def render_answer_html(answer: str, source_refs: tuple[SourceRef, ...]) -> str:
     refs = {ref.id: ref for ref in source_refs}
-    escaped = html.escape(answer)
+    escaped = html.escape(answer).replace("\n", "<br>")
     return _TAG_RUN.sub(
         lambda match: _replace_run(match.group(0), refs, rich=True),
         escaped,

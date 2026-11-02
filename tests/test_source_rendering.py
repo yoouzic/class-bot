@@ -48,3 +48,13 @@ def test_render_sources_html_includes_code_path_and_uncited_marker():
     assert "D:\\项目\\src\\solve_model.py" in html
     assert "（未引用）" in html
     assert render_sources_plain(refs, {"S1"}).startswith("[代码]")
+
+
+def test_render_preserves_line_breaks():
+    refs = (ref("S1", SourceKind.TEXTBOOK, "教", "PDF第1页"),)
+    html = render_answer_html("第一行[S1]\n第二行", refs)
+    assert "<br>" in html
+    assert "第一行" in html and "第二行" in html
+    assert render_answer_plain("第一行[S1]\n第二行", refs) == (
+        "第一行（教）\n第二行"
+    )
