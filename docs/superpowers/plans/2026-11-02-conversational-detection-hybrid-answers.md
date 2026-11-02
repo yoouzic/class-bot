@@ -50,7 +50,7 @@ from classbot.spoken_text import normalize_spoken_text
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("是是是，这个接口怎么调用", "这个接口怎么调用"),
+        ("是是是，这个接口怎么调用", "是，这个接口怎么调用"),
         ("这个这个方案的风险呢", "这个方案的风险呢"),
         ("这个模型的泛化——泛化性能怎么样", "这个模型的泛化性能怎么样"),
         ("呃，那个，这个接口怎么调用", "这个接口怎么调用"),
