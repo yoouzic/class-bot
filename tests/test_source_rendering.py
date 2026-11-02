@@ -28,6 +28,7 @@ def test_render_answer_plain_uses_chinese_labels_and_merges():
         ref("W1", SourceKind.WEB, "网", "标题"),
     )
     assert render_answer_plain("答案[S1][W1]", refs) == "答案（教、网）"
+    assert render_answer_plain("答案[s1]", refs) == "答案（教）"
 
 
 def test_render_answer_html_escapes_model_markup():

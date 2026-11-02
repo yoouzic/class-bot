@@ -7,9 +7,10 @@ from classbot.domain import SourceKind, SourceRef
 from classbot.llm.sources import source_type_label
 
 _TAG_RUN = re.compile(
-    r"(?:[\[【〔]\s*(?:[SW]\d+|G)\s*[\]】〕](?:\s*(?=[\[【〔]))?)+"
+    r"(?:[\[【〔]\s*(?:[SW]\d+|G)\s*[\]】〕](?:\s*(?=[\[【〔]))?)+",
+    re.IGNORECASE,
 )
-_TAG = re.compile(r"[\[【〔]\s*([SW]\d+|G)\s*[\]】〕]")
+_TAG = re.compile(r"[\[【〔]\s*([SW]\d+|G)\s*[\]】〕]", re.IGNORECASE)
 _LOCAL_COLOR = "#8be3ae"
 _WEB_COLOR = "#f0b45c"
 _GENERAL_COLOR = "#aab2bf"
@@ -27,7 +28,7 @@ def _labels(run: str, refs: dict[str, SourceRef]) -> list[tuple[str, str]]:
     labels: list[tuple[str, str]] = []
     seen: set[str] = set()
     for source_id in _TAG.findall(run):
-        ref = refs.get(source_id)
+        ref = refs.get(source_id.upper())
         label = ref.short_label if ref is not None else "来源待核"
         color = _color(ref.kind) if ref is not None else _GENERAL_COLOR
         if label in seen:

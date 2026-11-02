@@ -106,6 +106,7 @@ async def test_premise_and_scope_contract_reaches_real_request_without_rewriting
         assert "【依据不足】" not in card.answer
     else:
         assert card.answer == f"【资料事实】{excerpt}[S1]"
+    assert card.notice == ""
     assert card.sources == ("[S1] 合成方案.md · lines 7–9",)
 
 

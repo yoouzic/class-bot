@@ -248,7 +248,7 @@ class _AnswerCardWidget(QFrame):
                 render_sources_html(source_refs, cited)
             )
             self.sources_title_label.setText(
-                "来源与候选（绿=本地，橙=网络，灰=通识）"
+                "来源与候选（绿=本地，橙=网络，灰=通识/待核/未引用）"
             )
             self.sources_section.setVisible(True)
         else:
