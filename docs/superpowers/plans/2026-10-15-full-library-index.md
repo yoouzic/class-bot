@@ -51,4 +51,4 @@ The large-library failure is a pressure sample for the whole system. The audit
 also covers audio overflow and bounded segments, canceled retrieval ownership,
 bounded answer concurrency, completion semantics, scene-state isolation,
 corrupt-configuration recovery, shared models and LRU index retention. See
-`docs/system-audit-2026-10-15.md` for evidence and remaining limitations.
+`docs/audit/system-audit-2026-10-15.md` for evidence and remaining limitations.

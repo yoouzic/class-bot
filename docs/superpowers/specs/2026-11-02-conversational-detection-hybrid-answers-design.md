@@ -603,4 +603,4 @@ source_refs: tuple[SourceRef, ...] = ()
 - [ReClaim：交替生成引用与答案](https://aclanthology.org/2025.findings-naacl.55/)
 - [子句级引用](https://arxiv.org/html/2509.20859v2)
 - [流式自纠错检测](https://aclanthology.org/E17-1031.pdf)
-- 现有实现与评测：`docs/verification-2026-11-02-question-detection.md`、`CONTEXT.md`
+- 现有实现与评测：`docs/verification/verification-2026-11-02-question-detection.md`、`CONTEXT.md`

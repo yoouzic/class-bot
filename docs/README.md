@@ -16,19 +16,19 @@
 
 ## 验证与评测
 
-- [ASR 质量评测](eval-2026-11-02-asr-quality.md)
-- [ASR GPU 精修验证](verification-2026-11-01-asr-gpu-refiner.md)
-- [问题识别验证](verification-2026-11-02-question-detection.md)
-- [线上答辩验证](verification-2026-10-15-online-defense.md)
-- [实时答辩验证](verification-2026-10-16-live-defense.md)
-- [索引引擎验证](verification-2026-10-16-index-engine.md)
-- [缓存管理验证](verification-2026-10-16-cache-management.md)
+- [问题识别验证](verification/verification-2026-11-02-question-detection.md)
+- [ASR GPU 精修验证](verification/verification-2026-11-01-asr-gpu-refiner.md)
+- [线上答辩验证](verification/verification-2026-10-15-online-defense.md)
+- [实时答辩验证](verification/verification-2026-10-16-live-defense.md)
+- [索引引擎验证](verification/verification-2026-10-16-index-engine.md)
+- [缓存管理验证](verification/verification-2026-10-16-cache-management.md)
+- [ASR 质量评测](eval/eval-2026-11-02-asr-quality.md)
 
 ## 审计与观察
 
-- [系统审计](system-audit-2026-10-15.md)
-- [实时观察](live-observation-2026-09-30.md)
-- [大型资料库修复](large-library-fix-2026-10-15.md)
+- [系统审计](audit/system-audit-2026-10-15.md)
+- [大型资料库修复](audit/large-library-fix-2026-10-15.md)
+- [实时观察](observation/live-observation-2026-09-30.md)
 
 ## 项目约定
 
