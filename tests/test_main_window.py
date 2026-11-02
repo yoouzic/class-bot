@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
-from classbot.domain import AnswerCard, CardStatus
+from classbot.domain import AnswerCard, CardStatus, SourceKind, SourceRef
 from classbot.ui import capture_affinity
 from classbot.ui.main_window import MainWindow
 
@@ -37,6 +37,8 @@ def make_card(
     status: CardStatus = CardStatus.DETECTED,
     error: str | None = None,
     timestamp_ms: int = 0,
+    source_refs: tuple[SourceRef, ...] = (),
+    notice: str = "",
 ) -> AnswerCard:
     return AnswerCard(
         question_id=question_id,
@@ -46,6 +48,8 @@ def make_card(
         status=status,
         error=error,
         timestamp_ms=timestamp_ms,
+        source_refs=source_refs,
+        notice=notice,
     )
 
 
@@ -343,6 +347,48 @@ def test_close_emits_close_requested(window):
 def test_cancelled_candidate_does_not_display_waiting_for_answer(window):
     window.upsert_card(make_card(status=CardStatus.CANCELLED))
     assert "已取消回答" in window.cards_list.item(0).text()
+
+
+def test_card_with_source_refs_uses_chinese_labels_and_legend(window):
+    ref = SourceRef(
+        "S1", SourceKind.CODE, "solve_model.py",
+        "D:\\项目\\src\\solve_model.py · L10-L24",
+    )
+    window.upsert_card(
+        make_card(
+            answer="答案[S1]",
+            status=CardStatus.ANSWERED,
+            source_refs=(ref,),
+        )
+    )
+    item = window.cards_list.item(0)
+    widget = window.cards_list.itemWidget(item)
+    answer_label = widget.findChild(QLabel, "answerTextLabel")
+    sources_label = widget.findChild(QLabel, "sourcesTextLabel")
+    sources_title = widget.findChild(QLabel, "sourcesTitleLabel")
+    assert ">solve_model.py<" in answer_label.text()
+    assert "[S1]" not in answer_label.text()
+    assert "[代码]" in sources_label.text()
+    assert "D:\\项目\\src\\solve_model.py" in sources_label.text()
+    assert "绿=本地" in sources_title.text()
+
+
+def test_card_notice_and_html_escape(window):
+    ref = SourceRef("S1", SourceKind.TEXTBOOK, "教", "PDF第1页")
+    window.upsert_card(
+        make_card(
+            answer="<script>alert(1)</script>",
+            status=CardStatus.ANSWERED,
+            notice="有 1 句未标注来源",
+            source_refs=(ref,),
+        )
+    )
+    widget = window.cards_list.itemWidget(window.cards_list.item(0))
+    answer_label = widget.findChild(QLabel, "answerTextLabel")
+    notice_label = widget.findChild(QLabel, "noticeLabel")
+    assert "<script>" not in answer_label.text()
+    assert "&lt;script&gt;" in answer_label.text()
+    assert "有 1 句未标注来源" in notice_label.text()
 
 
 def test_card_limit_evicts_oldest_new_card_but_not_existing_upsert(window):
