@@ -66,6 +66,12 @@ from classbot.spoken_text import normalize_spoken_text
         ("model_v2.py 的参数怎么设置", "model_v2.py 的参数怎么设置"),
         ("呃", ""),
         ("这个这个", "这个"),
+        ("《这个这个》这本书讲了什么", "《这个这个》这本书讲了什么"),
+        ("“这个这个”是什么意思", "“这个这个”是什么意思"),
+        ("“哈哈哈”这个词怎么用", "“哈哈哈”这个词怎么用"),
+        ("这个对不对？不对，应该这样", "这个对不对？应该这样"),
+        ("太慢了！不对，是太快了", "太慢了！是太快了"),
+        ("第一，什么是过拟合。我是说，什么是正则化", "第一，什么是过拟合。什么是正则化"),
     ],
 )
 def test_normalize_spoken_text(raw, expected):
@@ -109,13 +115,34 @@ _SINGLE_CHAR_REPEAT = re.compile(r"([\u4e00-\u9fff])\1{2,}")
 _PHRASE_REPEAT = re.compile(
     r"([\u4e00-\u9fff]{2,6})(?:[\s，,、。；;：:—-]*\1)+"
 )
+_PROTECTED = re.compile(
+    r"“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|《[^》]*》|\"[^\"]*\"|'[^']*'"
+)
+_SENTENCE_SPLIT = re.compile(r"([。！？?!；;\n])")
 _SAFE_REPAIR = re.compile(
-    r"(?:[，,、。；;：:\s—]|^)(?:我是说|我想说的是|我是想说|或者说|"
+    r"(?:[，,、。；;：:！？?!\s—]|^)(?:我是说|我想说的是|我是想说|或者说|"
     r"准确地说|更准确地说|重新说|换个说法|而是)"
 )
 _AMBIGUOUS_REPAIR = re.compile(
-    r"(?:[，,、。；;：:\s—]|^)(?:不是|不对)(?=[，,、。；;：:\s—])"
+    r"(?:[，,、。；;：:！？?!\s—]|^)(?:不是|不对)"
+    r"(?=[，,、。；;：:！？?!\s—])"
 )
+
+
+def _protect_spans(text: str) -> tuple[str, list[str]]:
+    spans: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        spans.append(match.group(0))
+        return f"\x00{len(spans) - 1}\x00"
+
+    return _PROTECTED.sub(replace, text), spans
+
+
+def _restore_spans(text: str, spans: list[str]) -> str:
+    for index, value in enumerate(spans):
+        text = text.replace(f"\x00{index}\x00", value)
+    return text
 
 
 def _strip_fillers(text: str) -> str:
@@ -142,25 +169,36 @@ def _collapse_repeats(text: str) -> str:
 
 
 def _apply_self_repair(text: str) -> str:
-    markers = [
-        match
-        for pattern in (_SAFE_REPAIR, _AMBIGUOUS_REPAIR)
-        for match in pattern.finditer(text)
-    ]
-    if not markers:
-        return text
-    last = max(markers, key=lambda match: match.end())
-    tail = text[last.end() :].lstrip("，,、。；;：: \t")
-    return tail or text
+    parts = _SENTENCE_SPLIT.split(text)
+    repaired: list[str] = []
+    for part in parts:
+        if part in {"。", "！", "？", "?", "!", "；", ";", "\n"}:
+            repaired.append(part)
+            continue
+        markers = [
+            match
+            for pattern in (_SAFE_REPAIR, _AMBIGUOUS_REPAIR)
+            for match in pattern.finditer(part)
+        ]
+        if not markers:
+            repaired.append(part)
+            continue
+        last = max(markers, key=lambda match: match.end())
+        tail = part[last.end() :].lstrip("，,、。；;：:！？?! \t")
+        repaired.append(tail or part)
+    return "".join(repaired)
 
 
 def normalize_spoken_text(text: str) -> str:
+    """Fold spoken disfluencies for question detection without rewriting the transcript."""
     if not text:
         return ""
-    normalized = _strip_fillers(text.strip())
+    protected, spans = _protect_spans(text.strip())
+    normalized = _strip_fillers(protected)
     normalized = _collapse_repeats(normalized)
     normalized = _apply_self_repair(normalized)
-    return _strip_fillers(normalized.strip())
+    normalized = _strip_fillers(normalized.strip())
+    return _restore_spans(normalized, spans)
 ```
 
 - [ ] **Step 4: 运行新测试**
@@ -171,7 +209,7 @@ Run:
 .venv/Scripts/python.exe -m pytest tests/test_spoken_text.py -q
 ```
 
-Expected: PASS (16 passed).
+Expected: PASS (22 passed).
 
 - [ ] **Step 5: 运行现有检测器测试，确认没有破坏**
 
