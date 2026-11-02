@@ -1,11 +1,15 @@
-"""Measure QuestionDetector precision/recall against annotated clauses.
+"""Measure classroom or defense question detection against annotated clauses.
 
 Usage (project root):
-    PYTHONPATH=src .venv/Scripts/python.exe scripts/eval_question_detector.py \
+    PYTHONIOENCODING=utf-8 PYTHONPATH=src .venv/Scripts/python.exe \
+        scripts/eval_question_detector.py \
         --sample tmp/eval-asr-20261101/clause-sample.json \
-        --labels tmp/eval-asr-20261101/clause-labels.json
+        --labels tmp/eval-asr-20261101/clause-labels.json \
+        --detector classroom
 
-Labels are AI-annotated from the 2026-09-16 recording: q = a complete,
+`--detector defense` runs DefenseQuestionDetector over the same clauses. The
+labels are AI-annotated from a classroom recording, so defense metrics are a
+regression reference only, not an acceptance gate. Labels: q = a complete,
 answerable question (including teacher self-posed questions and prompts to
 students); n = statements, confirmation tails, fragments, noise. They are a
 reviewable baseline for regression comparison, not ground truth.
@@ -25,6 +29,8 @@ from classbot.question_detector import QuestionDetector
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample", required=True)
     parser.add_argument("--labels", required=True)
@@ -33,10 +39,14 @@ def main() -> int:
         "--detector", choices=("classroom", "defense"), default="classroom"
     )
     args = parser.parse_args()
+    print(f"detector: {args.detector}")
 
     sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))
     labels = json.loads(Path(args.labels).read_text(encoding="utf-8"))
-    profile = load_course_profile(args.course)
+    if args.detector == "classroom":
+        profile = load_course_profile(args.course)
+    else:
+        profile = None
 
     tp = fp = fn = tn = 0
     disagreements: list[tuple[str, int, str, str]] = []
@@ -48,7 +58,8 @@ def main() -> int:
             detector = DefenseQuestionDetector("答辩")
         else:
             detector = QuestionDetector(
-                "马克思主义基本原理", hotwords=profile.hotwords,
+                "马克思主义基本原理",
+                hotwords=profile.hotwords if profile else (),
             )
         event = TranscriptEvent(
             text=item["clause"],
