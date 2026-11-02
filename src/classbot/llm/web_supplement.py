@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
-_TAG = re.compile(r"[\[【〔]\s*(?:S\d+|W\d+|G)\s*[\]】〕]")
+_TAG = re.compile(
+    r"[\[【〔]\s*(?:S\d+|W\d+|G)\s*[\]】〕]", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +39,7 @@ def parse_web_supplement(
         ids = claim["web_ids"]
         if not isinstance(text, str) or not text.strip() or len(text) > 400:
             return ()
-        if _TAG.search(text):
+        if _TAG.search(unicodedata.normalize("NFKC", text)):
             return ()
         if not isinstance(ids, list) or not 1 <= len(ids) <= 3:
             return ()

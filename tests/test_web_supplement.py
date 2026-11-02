@@ -19,6 +19,13 @@ def test_parse_web_supplement_rejects_inline_tags():
     assert parse_web_supplement(raw, {"W1"}) == ()
 
 
+def test_parse_web_supplement_rejects_fullwidth_and_lowercase_tags():
+    fullwidth = '{"claims":[{"text":"一般背景［W1］。","web_ids":["W1"]}]}'
+    lowercase = '{"claims":[{"text":"一般背景[w1]。","web_ids":["W1"]}]}'
+    assert parse_web_supplement(fullwidth, {"W1"}) == ()
+    assert parse_web_supplement(lowercase, {"W1"}) == ()
+
+
 def test_parse_web_supplement_rejects_bad_shape_and_empty_claims():
     assert parse_web_supplement('{"claims":[]}', {"W1"}) == ()
     assert parse_web_supplement('{"claims":[{"text":"x"}]}', {"W1"}) == ()

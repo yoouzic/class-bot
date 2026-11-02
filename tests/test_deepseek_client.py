@@ -1136,6 +1136,207 @@ async def test_defense_partial_web_supplement_is_hybrid(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_defense_partial_network_failure_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.grounding import GroundedAnswer
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def empty_web(query):
+        return ()
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", empty_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+    assert [ref.id for ref in result.source_refs] == ["S1"]
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_invalid_supplement_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def fake_web(query):
+        return (
+            WebResult("一般背景", "https://example.com/bg", "摘要"),
+        )
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": "{\\"claims\\":[]}"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+
+
+@pytest.mark.asyncio
+async def test_defense_partial_supplement_exception_appends_note(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.domain import SourceKind, SourceRef
+    from classbot.llm.deepseek_client import DeepSeekStreamError
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    local_ref = SourceRef("S1", SourceKind.DOCUMENT, "文", "方案.md · lines 1")
+
+    async def fake_grounded(question, subject, *, prepared):
+        return GroundedAnswer(
+            "【资料事实】本地结论。[S1]", "partial", (), (local_ref,)
+        )
+
+    async def fake_web(query):
+        return (
+            WebResult("一般背景", "https://example.com/bg", "摘要"),
+        )
+
+    async def fail_supplement(*args, **kwargs):
+        raise DeepSeekStreamError("supplement failed")
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        monkeypatch.setattr(client, "_web_supplement", fail_supplement)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert result.status == "partial"
+    assert result.text.endswith("网络检索也未找到可用的一般依据。")
+
+
+@pytest.mark.asyncio
+async def test_defense_speculative_web_starts_before_grounding(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.llm.grounding import GroundedAnswer
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    web_started = asyncio.Event()
+
+    async def fake_web(query):
+        web_started.set()
+        return ()
+
+    async def fake_grounded(question, subject, *, prepared):
+        await asyncio.wait_for(web_started.wait(), 1)
+        return GroundedAnswer("本地答案", "supported", (), ())
+
+    settings = _settings()
+    async with httpx.AsyncClient(base_url=settings.base_url) as http_client:
+        client = DeepSeekClient(
+            settings, http_client=http_client,
+            scenario=_Scenario(), knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        result = await client.grounded_answer_with_web_fallback(
+            "这个原理是什么", "学科", prepared=PreparedAnswer([], ()),
+        )
+        await client.aclose()
+        await http_client.aclose()
+
+    assert web_started.is_set()
+    assert result.status == "supported"
+
+
+@pytest.mark.asyncio
 async def test_prepare_defense_answer_builds_code_source_refs(monkeypatch, tmp_path):
     monkeypatch.setenv("CLASSBOT_COURSE", "")
     from types import SimpleNamespace
