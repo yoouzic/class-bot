@@ -1069,7 +1069,7 @@ def test_audit_normalizes_fullwidth_tags():
 
 
 def test_audit_reports_missing_tags_but_skips_headers():
-    text, notice = audit_source_tags(
+    _text, notice = audit_source_tags(
         "【资料事实】有依据。[S1]\n【说明】未核验。\n另一句没有来源。",
         (ref("S1"),),
     )
