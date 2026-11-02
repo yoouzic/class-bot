@@ -269,7 +269,7 @@ class DeepSeekClient:
             f"教材：{record.page_label or '教材片段'}" for record in records
         ) + tuple(
             f"网络检索：{result.title} {result.url}" for result in web_results
-        ) + ("通识：模型内部知识（未检索）",)
+        ) + (f"通识：{build_general_source_ref().detail}",)
 
         user_content = (
             f"学科：{subject}\n问题：{question}\n\n"
