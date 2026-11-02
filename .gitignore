@@ -6,6 +6,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .cache/
+.superpowers/
+.idea/
+.vscode/
+*.tmp
 .env
 .env.*
 !.env.example
@@ -20,25 +24,3 @@ courses/*/reference.txt
 dist/
 build/
 *.egg-info/
-
-# Private credentials and local documents
-*.pem
-*.key
-*.p12
-*.pfx
-credentials*.json
-secrets*.json
-tokens*.json
-*.wav
-*.mp3
-*.mp4
-*.flac
-*.ogg
-*.aac
-*.wma
-*.docx
-*.pptx
-*.xlsx
-*.sqlite
-*.sqlite3
-*.db

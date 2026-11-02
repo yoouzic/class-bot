@@ -45,6 +45,27 @@ class QuestionCandidate:
             raise ValueError("confidence must be between 0 and 1")
 
 
+class SourceKind(StrEnum):
+    TEXTBOOK = "textbook"
+    SLIDES = "slides"
+    CODE = "code"
+    DOCUMENT = "document"
+    PDF = "pdf"
+    WEB = "web"
+    GENERAL = "general"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRef:
+    id: str
+    kind: SourceKind
+    short_label: str
+    detail: str
+    path: str = ""
+    locator: str = ""
+    url: str = ""
+
+
 @dataclass(slots=True)
 class AnswerCard:
     question_id: str
@@ -56,6 +77,8 @@ class AnswerCard:
     timestamp_ms: int = 0
     scenario_name: str = ""
     sources: tuple[str, ...] = ()
+    source_refs: tuple[SourceRef, ...] = ()
+    notice: str = ""
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():

@@ -5,8 +5,9 @@ from dataclasses import replace
 from typing import ClassVar
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -21,6 +22,14 @@ from PySide6.QtWidgets import (
 )
 
 from classbot.domain import AnswerCard, CardStatus
+from classbot.llm.source_tags import cited_source_ids
+from classbot.ui import capture_affinity
+from classbot.ui.source_rendering import (
+    render_answer_html,
+    render_answer_plain,
+    render_sources_html,
+    render_sources_plain,
+)
 
 
 def _format_elapsed_ms(timestamp_ms: int) -> str:
@@ -112,6 +121,10 @@ class _AnswerCardWidget(QFrame):
     QLabel#errorLabel {
         color: #ff9d9d;
     }
+    QLabel#noticeLabel {
+        color: #aab2bf;
+        font-size: 11px;
+    }
     """
 
     def __init__(self, card: AnswerCard) -> None:
@@ -166,12 +179,21 @@ class _AnswerCardWidget(QFrame):
             "sourcesTextLabel",
         )
         layout.addWidget(self.sources_section)
+        self.sources_title_label = self.sources_section.findChild(
+            QLabel, "sourcesTitleLabel"
+        )
 
         self.error_label = QLabel()
         self.error_label.setObjectName("errorLabel")
         self.error_label.setWordWrap(True)
         _plain_selectable(self.error_label)
         layout.addWidget(self.error_label)
+
+        self.notice_label = QLabel()
+        self.notice_label.setObjectName("noticeLabel")
+        self.notice_label.setWordWrap(True)
+        _plain_selectable(self.notice_label)
+        layout.addWidget(self.notice_label)
 
         self.update_card(card)
 
@@ -203,13 +225,41 @@ class _AnswerCardWidget(QFrame):
         self.time_label.setText(f"[{_format_elapsed_ms(card.timestamp_ms)}]")
         self.status_value_label.setText(f"状态：{_status_text(card)}")
         self.question_text_label.setText(card.question)
-        self.answer_text_label.setText(_answer_text(card))
         scenario_name = getattr(card, "scenario_name", "")
         self.scenario_name_label.setText(scenario_name)
         self.scenario_name_label.setVisible(bool(scenario_name))
+
+        answer_text = _answer_text(card)
+        source_refs = tuple(getattr(card, "source_refs", ()))
+        if source_refs:
+            self.answer_text_label.setTextFormat(Qt.TextFormat.RichText)
+            self.answer_text_label.setText(
+                render_answer_html(answer_text, source_refs)
+            )
+        else:
+            self.answer_text_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.answer_text_label.setText(answer_text)
+
         sources = tuple(getattr(card, "sources", ()))
-        self.sources_text_label.setText("\n".join(sources))
-        self.sources_section.setVisible(bool(sources))
+        if source_refs:
+            cited = cited_source_ids(card.answer)
+            self.sources_text_label.setTextFormat(Qt.TextFormat.RichText)
+            self.sources_text_label.setText(
+                render_sources_html(source_refs, cited)
+            )
+            self.sources_title_label.setText(
+                "来源与候选（绿=本地，橙=网络，灰=通识/待核/未引用）"
+            )
+            self.sources_section.setVisible(True)
+        else:
+            self.sources_text_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.sources_text_label.setText("\n".join(sources))
+            self.sources_title_label.setText("检索候选（不代表直接依据）")
+            self.sources_section.setVisible(bool(sources))
+
+        notice = getattr(card, "notice", "")
+        self.notice_label.setText(notice)
+        self.notice_label.setVisible(bool(notice))
         self.error_label.setText(f"错误：{card.error}" if card.error else "")
         self.error_label.setVisible(bool(card.error))
         self.updateGeometry()
@@ -251,6 +301,7 @@ class MainWindow(QMainWindow):
         self._configuration_busy = False
         self._library_ready = False
         self._report_available = False
+        self._applied_capture_hidden: bool | None = None
         self._scenario_profiles: dict[str, object] = {}
         self._cards: dict[str, AnswerCard] = {}
         self._items: dict[str, QListWidgetItem] = {}
@@ -344,10 +395,24 @@ class MainWindow(QMainWindow):
         self.cloud_note_label.setWordWrap(True)
         layout.addWidget(self.cloud_note_label)
 
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
         self.status_label = QLabel("已停止")
         self.status_label.setObjectName("statusLabel")
         _plain_selectable(self.status_label)
-        layout.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, stretch=1)
+        self.capture_hidden_checkbox = QCheckBox("对屏幕共享隐藏")
+        self.capture_hidden_checkbox.setObjectName("captureHiddenCheckbox")
+        self.capture_hidden_checkbox.setToolTip(
+            "勾选后，屏幕共享、录制和截图中不会出现本窗口；"
+            "仅 Windows 10 2004（build 19041）及以上系统支持。"
+        )
+        supported = capture_affinity.is_supported()
+        self.capture_hidden_checkbox.setEnabled(supported)
+        self.capture_hidden_checkbox.setChecked(supported)
+        self.capture_hidden_checkbox.toggled.connect(self._apply_capture_hiding)
+        status_row.addWidget(self.capture_hidden_checkbox)
+        layout.addLayout(status_row)
 
         self.transcript_label = QLabel("等待转写…")
         self.transcript_label.setObjectName("transcriptLabel")
@@ -546,6 +611,34 @@ class MainWindow(QMainWindow):
         self.close_requested.emit()
         super().closeEvent(event)
 
+    def showEvent(self, event: QShowEvent) -> None:
+        """Reapply capture exclusion; the native handle may have been recreated."""
+        super().showEvent(event)
+        self._apply_capture_hiding(self.capture_hidden_checkbox.isChecked())
+
+    def _apply_capture_hiding(self, hidden: bool) -> bool:
+        """Apply the checked capture exclusion to the native window handle."""
+        if not self.capture_hidden_checkbox.isEnabled():
+            return False
+        if capture_affinity.set_capture_visible(
+            int(self.winId()), visible=not hidden
+        ):
+            self._applied_capture_hidden = hidden
+            return True
+        # The system refused the change, so the window keeps its previous
+        # affinity; restore the checkbox to describe that real state.
+        self.capture_hidden_checkbox.blockSignals(True)
+        try:
+            still_hidden = self._applied_capture_hidden is True
+            self.capture_hidden_checkbox.setChecked(still_hidden)
+            self.capture_hidden_checkbox.setEnabled(False)
+            self.capture_hidden_checkbox.setToolTip(
+                "当前环境无法限制屏幕共享，本窗口会正常出现在共享画面中。"
+            )
+        finally:
+            self.capture_hidden_checkbox.blockSignals(False)
+        return False
+
     def set_status(self, status: str) -> None:
         """Update the listening status without doing any background work."""
         self.status_label.setText(self._STATUS_LABELS.get(status, status))
@@ -573,7 +666,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def render_card_text(card: AnswerCard) -> str:
         """Render one complete card from its current snapshot."""
-        answer = _answer_text(card)
+        source_refs = tuple(getattr(card, "source_refs", ()))
+        answer = render_answer_plain(_answer_text(card), source_refs)
         status = _status_text(card)
         lines = [
             f"[{MainWindow.format_elapsed_ms(card.timestamp_ms)}] 问题：{card.question}",
@@ -584,9 +678,18 @@ class MainWindow(QMainWindow):
             lines.append(f"错误：{card.error}")
         if getattr(card, "scenario_name", ""):
             lines.append(f"场景：{card.scenario_name}")
-        if getattr(card, "sources", ()):
+        if source_refs:
+            cited = cited_source_ids(card.answer)
+            lines.append("来源与候选（不代表直接依据）：")
+            sources_text = render_sources_plain(source_refs, cited)
+            if sources_text:
+                lines.extend(sources_text.splitlines())
+        elif getattr(card, "sources", ()):
             lines.append("检索候选（不代表直接依据）：")
             lines.extend(card.sources)
+        notice = getattr(card, "notice", "")
+        if notice:
+            lines.append(f"提示：{notice}")
         return "\n".join(lines)
 
     def upsert_card(self, card: AnswerCard) -> None:

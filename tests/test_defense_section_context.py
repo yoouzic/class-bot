@@ -25,10 +25,10 @@ def _evidence(prepared):
 
 @pytest.mark.asyncio
 async def test_indexed_section_scope_reaches_wire_with_body_and_raw_question_unchanged():
-    question = "示例模型是否不支持 50 ms 的连续块？"
+    question = "解析模型是否不支持 32 ms 的连续块？"
     meeting = "UNRELATED_MEETING_CONTEXT_96a204"
-    body = "当前是固定输入参数的示例验证。" + "正文" * 700
-    section_context = "# 基线审计\n## 4. ExampleModel / 示例功能边界\n" + "标题" * 180
+    body = "当前是固定物理参数的孤立块验证。" + "正文" * 700
+    section_context = "# 基线审计\n## 4. Stage3B / 恢复科研树具体缺什么\n" + "标题" * 180
     section_source = "baseline.md · lines 1–20\nbaseline.md · lines 90–95"
     hits = (
         SimpleNamespace(
@@ -66,7 +66,7 @@ async def test_indexed_section_scope_reaches_wire_with_body_and_raw_question_unc
         "id": "S1", "source": hits[0].source, "excerpt": body[:1200],
         "section_context": section_context[:300], "section_source": section_source,
     }
-    assert "ExampleModel / 示例功能边界" in wire
+    assert "Stage3B / 恢复科研树具体缺什么" in wire
     display_sections = "；".join(section_source.splitlines())
     assert prepared.sources[0] == f"[S1] {hits[0].source}；章节上下文：{display_sections}"
     assert "\n" not in prepared.sources[0]

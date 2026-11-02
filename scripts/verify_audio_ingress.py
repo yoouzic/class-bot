@@ -72,7 +72,7 @@ async def run(args, cases):
                    loader_override=None if args.production_model_loader else
                    "verification process only: same cached paraformer checkpoint, disable_update=True, check_latest=False",
                    checkpoint=asr_model_receipt(model_path))
-    settings = Settings(None, "示例项目答辩", "cloud-disabled", "https://api.deepseek.com", "cpu",
+    settings = Settings(None, "量子密钥分发项目答辩", "cloud-disabled", "https://api.deepseek.com", "cpu",
                         audio_source="loopback")
     def recognizer_factory(device):
         recognizer = funasr_streaming.FunAsrStreamingRecognizer(

@@ -7,6 +7,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
+from classbot.domain import SourceRef
+
 _MAX_REVIEW_CHARS = 24000
 _SOURCE_ID = re.compile(r"S[1-9][0-9]*\Z")
 _INLINE_SOURCE = re.compile(r"[\[【〔]\s*S", re.IGNORECASE)
@@ -46,6 +48,7 @@ class GroundedAnswer:
     text: str
     status: str
     claims: tuple[dict[str, Any], ...]
+    source_refs: tuple[SourceRef, ...] = ()
 
 
 def source_units(text: str, field: str) -> tuple[dict[str, str], ...]:

@@ -11,6 +11,14 @@ from classbot.llm.deepseek_client import DeepSeekClient, DeepSeekStreamError
 from classbot.llm.grounding import GroundingReviewError
 from classbot.pipeline import LivePipeline
 
+
+@pytest.fixture(autouse=True)
+def _web_search_off(monkeypatch):
+    """Local-discipline tests run offline; web fallback has its own tests."""
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+
+
 SOURCE = "计划选择模型 A 做校验，模型 B 生成训练数据；这不能证明 A 缺少训练能力。"
 SAFE = "计划选择模型 A 做校验、模型 B 生成训练数据，未证明 A 缺少训练能力。"
 

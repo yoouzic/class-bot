@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 COURSES_ROOT = Path(__file__).resolve().parents[2] / "courses"
@@ -11,6 +11,7 @@ _GENERIC_QUERY_RE = re.compile(
     r"为什么|是什么|什么|怎样|如何|哪些|哪个|哪几|分几|"
     r"是不是|是否|能不能|可不可以|请问|我们的|我们|这个|那个|一个|问题"
 )
+_PAGE_MARKER = re.compile(r"^\[([^\]]+)\]\s*")
 
 
 def _reference_query_terms(text: str) -> set[str]:
@@ -21,18 +22,74 @@ def _reference_query_terms(text: str) -> set[str]:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceExcerpt:
+    text: str
+    page_label: str = ""
+    source: str = "教材"
+
+
+@dataclass(frozen=True, slots=True)
 class CourseProfile:
     course_id: str
     hotwords: tuple[str, ...] = ()
     corrections: dict[str, str] | None = None
     reference_chunks: tuple[str, ...] = ()
+    _reference_terms: frozenset[str] = field(
+        init=False, repr=False, compare=False, default=frozenset()
+    )
 
     def __post_init__(self) -> None:
         if self.corrections is None:
             object.__setattr__(self, "corrections", {})
+        object.__setattr__(
+            self,
+            "_reference_terms",
+            frozenset(
+                term
+                for chunk in self.reference_chunks
+                for term in _terms(chunk)
+            ),
+        )
 
     def find_reference(self, question: str, limit: int = 3) -> tuple[str, ...]:
         return self._ranked_references(question, limit=limit)
+
+    def find_reference_records(
+        self,
+        question: str,
+        *,
+        limit: int = 4,
+        max_chars: int = 700,
+    ) -> tuple[ReferenceExcerpt, ...]:
+        references = self._ranked_references(question, limit=limit)
+        query_terms = tuple(
+            sorted(_terms(question), key=lambda term: (-len(term), term))
+        )
+        records = []
+        for chunk in references:
+            text = _excerpt_reference(chunk, query_terms, max_chars=max_chars)
+            match = _PAGE_MARKER.match(text)
+            records.append(
+                ReferenceExcerpt(
+                    text=text,
+                    page_label=match.group(1) if match else "",
+                )
+            )
+        return tuple(records)
+
+    def reference_coverage(self, question: str) -> float:
+        if not self.reference_chunks:
+            return 0.0
+        query_terms = _reference_query_terms(question)
+        if not query_terms:
+            return 1.0
+        overlap = query_terms & self._reference_terms
+        if not overlap:
+            return 0.0
+        # 触发阈值只用于决定是否补网络；三处实词重合已足以让本地候选
+        # 先回答，避免长问句因分母过大而每题都联网。
+        denominator = min(3, len(query_terms))
+        return min(1.0, len(overlap) / denominator)
 
     def find_reference_excerpts(
         self,
@@ -41,17 +98,11 @@ class CourseProfile:
         limit: int = 4,
         max_chars: int = 700,
     ) -> tuple[str, ...]:
-        """Return page-marked original-text windows around matching terms."""
-        if max_chars <= 0:
-            return ()
-
-        references = self._ranked_references(question, limit=limit)
-        query_terms = tuple(
-            sorted(_terms(question), key=lambda term: (-len(term), term))
-        )
         return tuple(
-            _excerpt_reference(chunk, query_terms, max_chars=max_chars)
-            for chunk in references
+            record.text
+            for record in self.find_reference_records(
+                question, limit=limit, max_chars=max_chars
+            )
         )
 
     def _ranked_references(

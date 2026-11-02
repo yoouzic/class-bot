@@ -12,6 +12,8 @@ from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 
 from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
+from classbot.asr.offline_refiner import OfflineRefiner
+from classbot.asr.partial_punctuator import PartialPunctuator
 from classbot.audio.capture import AudioCapture, AudioCaptureError
 from classbot.audio.segmenter import SpeechSegmenter
 from classbot.config import Settings
@@ -31,11 +33,23 @@ def _make_recognizer(device: str) -> FunAsrStreamingRecognizer:
     final_refinement = os.getenv(
         "CLASSBOT_FINAL_REFINEMENT", "true"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    refiner: OfflineRefiner | None = None
+    if final_refinement and os.getenv(
+        "CLASSBOT_ASR_REFINER", "seaco"
+    ).strip().lower() not in {"0", "false", "no", "off", "stream", "disabled"}:
+        refiner = OfflineRefiner(device=device, hotwords=profile.hotwords)
+    partial_punctuator: PartialPunctuator | None = None
+    if os.getenv(
+        "CLASSBOT_ASR_PARTIAL_PUNC", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}:
+        partial_punctuator = PartialPunctuator(device=device)
     return FunAsrStreamingRecognizer(
         device=device,
         hotwords=profile.hotwords,
         corrections=profile.corrections,
         final_refinement=final_refinement,
+        refiner=refiner,
+        partial_punctuator=partial_punctuator,
     )
 
 
