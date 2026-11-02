@@ -197,12 +197,22 @@ _SHORT_CONTENT_CUES = (
     "训练", "测试", "实验", "结果", "原因", "原理", "定义", "作用", "流程",
 )
 _SHORT_MANAGEMENT_RE = re.compile(
-    r"(?:能?听(?:见|得到|得见)|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|共享屏幕|摄像头|"
-    r"点(?:个)?名|到齐|来齐|安静|休息|明白|听懂|清楚|懂|看到|看见)"
+    r"(?:能?听(?:见|得到|得见)(?:我)?(?:说话)?|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|"
+    r"共享屏幕|摄像头|点(?:个)?名|到齐|来齐|安静|休息|明白|听懂|清楚|懂|看到|看见)"
     r"(?:了|好了|一下|清楚|好)?(?:吗|呀|啊|吧|呢)?$"
 )
 _GREETING_RE = re.compile(
     r"^(?:你好|大家好|各位好|老师好|早上好|晚上好|最近好吗|吃了吗|辛苦了|谢谢)"
+)
+# 含这些词的"呀/啊/吧/来着"句是在陈述，不是在追问。
+_STATEMENT_MARKERS = (
+    "就是", "这样", "那样", "很", "太", "挺", "真的", "确实", "已经",
+    "都", "也", "还", "刚才", "只是",
+)
+# 上下文中的短应答/过渡语，不是对上一个问题的追问。
+_SHORT_ACK_RE = re.compile(
+    r"^(?:好的?|好吧|好|行|可以(?:的)?|是的?|对(?:的)?|嗯|哦|这样|就这样|"
+    r"先这样|那好|继续|我们继续)"
 )
 # 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
 _DISCOURSE_CONTINUATION_PREFIXES = (
@@ -239,11 +249,15 @@ def _is_particle_question(
     ):
         return False
     stem = normalized_text
-    for tail in _PARTICLE_TAILS:
-        if stem.endswith(tail):
-            stem = stem[: -len(tail)]
+    tail = ""
+    for candidate in _PARTICLE_TAILS:
+        if stem.endswith(candidate):
+            tail = candidate
+            stem = stem[: -len(candidate)]
             break
     if has_context:
+        if _SHORT_ACK_RE.match(normalized_text):
+            return False
         if len(normalized_text) == 2 and normalized_text not in {
             "它呢", "他呢", "她呢",
         }:
@@ -251,18 +265,27 @@ def _is_particle_question(
         return len(normalized_text) >= 2
     if len(normalized_text) < 5:
         return False
+    if tail in _FILLER_PARTICLE_TAILS:
+        if any(marker in normalized_text for marker in _STATEMENT_MARKERS):
+            return False
+        if tail == "来着":
+            return any(
+                signal in normalized_text
+                for signal in _CONTEXT_QUESTION_SIGNALS
+            )
+        if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
+            return True
+        # 呀/啊/吧 also end ordinary statements; one-character cues such as
+        # "有" inside "所有之上" are too weak to prove a question.
+        return any(
+            len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
+        )
     if "的" in normalized_text or normalized_text.startswith(
         ("这个", "那个", "它", "他们", "她们")
     ):
         return True
     if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
         return True
-    if normalized_text.endswith(("呀", "啊", "吧")):
-        # 呀/啊/吧 also end ordinary statements; one-character cues such as
-        # "有" inside "所有之上" are too weak to prove a question.
-        return any(
-            len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
-        )
     return any(cue in stem for cue in _SHORT_CONTENT_CUES)
 
 
@@ -576,13 +599,22 @@ def _looks_like_question_clause(
                 signal in particle_text
                 for signal in _PARTICLE_QUESTION_SIGNALS
             )
-            and len(particle_text) <= 10
+            and (
+                len(particle_text) < 10
+                or _CONFIRMATION_RE.search(particle_text)
+                or any(
+                    marker in particle_text
+                    for marker in _DISCOURSE_CONTINUATION_MARKERS
+                )
+            )
             and not _is_particle_question(
                 particle_text, has_context=has_context
             )
         ):
             # A bare "…吗/呢" tail on a short clause is usually a filler or
             # confirmation; a longer one ("…支持中文吗") is a real question.
+            # A discourse continuation ("等一下再讲呢") stays non-question
+            # even at 10 chars, where the length gate no longer applies.
             return False
         if particle_text.endswith("什么") and particle_text.count(
             "什么"
@@ -1077,7 +1109,7 @@ class QuestionDetector:
         if len(normalized_text) < 8:
             if len(normalized_text) < 4:
                 return False
-            if _is_particle_question(normalized_text, has_context=False):
+            if _is_particle_question(normalized_text, has_context=True):
                 return True
             return any(
                 signal in normalized_text
