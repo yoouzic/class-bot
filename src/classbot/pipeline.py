@@ -11,6 +11,7 @@ from typing import Any
 
 from classbot.asr.protocol import SpeechRecognizer
 from classbot.domain import AnswerCard, CardStatus, QuestionCandidate
+from classbot.llm.source_tags import audit_source_tags
 from classbot.question_detector import QuestionDetector, normalize_text
 
 Callback = Callable[..., Any]
@@ -319,6 +320,8 @@ class LivePipeline:
                 state.context = candidate.context
                 state.card.answer = ""
                 state.card.sources = ()
+                state.card.source_refs = ()
+                state.card.notice = ""
                 state.card.status = CardStatus.DETECTED
                 state.card.error = None
                 changed = True
@@ -343,6 +346,8 @@ class LivePipeline:
         state.card.subject = candidate.subject
         state.card.answer = ""
         state.card.sources = ()
+        state.card.source_refs = ()
+        state.card.notice = ""
         state.card.status = CardStatus.DETECTED
         state.card.error = None
         await self._call(self._on_card, state.card, "on_card")
@@ -357,6 +362,8 @@ class LivePipeline:
         state.task = None
         state.card.answer = ""
         state.card.sources = ()
+        state.card.source_refs = ()
+        state.card.notice = ""
         state.card.error = None
         state.card.status = CardStatus.CANCELLED
         await self._call(self._on_card, state.card, "on_card")
@@ -435,6 +442,9 @@ class LivePipeline:
                 if not self._is_current(state, revision):
                     return
                 state.card.sources = prepared.sources
+                state.card.source_refs = tuple(
+                    getattr(prepared, "source_refs", ())
+                )
                 await self._call(self._on_card, state.card, "on_card")
             grounded_answer = getattr(
                 self._client, "grounded_answer_with_web_fallback", None
@@ -455,6 +465,9 @@ class LivePipeline:
                 if not isinstance(verified_text, str) or not verified_text.strip():
                     raise ValueError("答辩证据核验没有返回可发布的内容")
                 state.card.answer = verified_text
+                state.card.source_refs = tuple(
+                    getattr(verified, "source_refs", state.card.source_refs)
+                )
                 await self._call(
                     self._on_delta, state.card.question_id, state.card.answer, "on_delta",
                 )
@@ -492,6 +505,13 @@ class LivePipeline:
                                 raise
                             self._record_cleanup_error("answer stream cleanup", cleanup_error)
                             self._add_exception_note(stream_failure, "answer stream cleanup", cleanup_error)
+
+            if state.card.answer and state.card.source_refs:
+                cleaned, notice = audit_source_tags(
+                    state.card.answer, state.card.source_refs
+                )
+                state.card.answer = cleaned
+                state.card.notice = notice
 
             if self._is_current(state, revision):
                 state.card.status = CardStatus.ANSWERED
