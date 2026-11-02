@@ -811,3 +811,140 @@ def test_classroom_management_before_complete_question_does_not_veto_question():
     ))
     assert len(candidates) == 1
     assert candidates[0].text == "认识的过程是什么"
+
+
+def _final(text: str) -> TranscriptEvent:
+    return TranscriptEvent(text=text, is_final=True)
+
+
+def test_final_clause_ending_shinayige_is_a_complete_question():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(_final("划分唯物主义和唯心主义的唯一标准是哪个呀"))
+    )
+
+    assert "哪个" in candidate.text
+
+
+def test_question_with_hui_bu_hui_marker_is_detected():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(_final("我们之间会不会有联系"))
+    )
+
+    assert "联系" in candidate.text
+
+
+def test_short_complete_question_passes_the_length_floor():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(detector.feed(_final("意识是谁的机能")))
+
+    assert "意识" in candidate.text
+
+
+def test_inverted_shi_shenme_question_is_detected():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(detector.feed(_final("是什么来支撑了一个杯子")))
+
+    assert "杯子" in candidate.text
+
+
+def test_final_ending_shi_nage_is_not_treated_as_an_incomplete_partial():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(_final("属于主观唯心的是哪一个"))
+    )
+
+    assert "主观唯心" in candidate.text
+
+
+def test_partial_ending_shi_nage_still_waits_for_completion():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidates = detector.feed(
+        TranscriptEvent(text="属于主观唯心的是哪一个", is_final=False)
+    )
+
+    assert candidates == []
+
+
+def test_jingjiu_haishi_alternative_question_is_detected():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(_final("第一个究竟是主观唯心还是客观唯心"))
+    )
+
+    assert candidate.text
+
+
+def test_long_question_without_hint_words_survives_via_question_form():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(
+            _final("为什么理念是不变的不可分割的啊，能够成为实体")
+        )
+    )
+
+    assert "理念" in candidate.text
+
+
+def test_jiushi_renwei_is_not_a_question_marker():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidates = detector.feed(
+        _final("就说从那个本体论上看的话，就是否认联系")
+    )
+
+    assert candidates == []
+
+
+def test_buneng_buneng_does_not_contain_neng_bu_neng_question():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidates = detector.feed(
+        _final("我们不能不能等这个把物质范畴直接等同于整体，这个大家能理解吧")
+    )
+
+    assert candidates == []
+
+
+def test_indefinite_shenme_after_buguan_is_not_a_question():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidates = detector.feed(
+        _final(
+            "因为他有这样一种认识，一旦有这样一种能力，"
+            "不管我们的生活发生什么，我们都不会大喜大悲"
+        )
+    )
+
+    assert candidates == []
+
+
+def test_comprehension_check_tail_is_not_a_question():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidates = detector.feed(
+        _final("这个大家能理解吧，物质范畴不能直接等同于整体")
+    )
+
+    assert candidates == []
+
+
+def test_teacher_answer_trimmer_requires_cue_at_tail_start():
+    detector = QuestionDetector(subject="马克思主义基本原理")
+
+    candidate = _one(
+        detector.feed(
+            _final("现在是不是可以给一个定义好，带着你自己的一个答案")
+        )
+    )
+
+    assert "定义" in candidate.text

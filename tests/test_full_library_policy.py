@@ -297,11 +297,11 @@ def test_full_metadata_scan_does_not_open_sources(tmp_path, monkeypatch):
 
 def test_full_bounds_are_explicit_and_fit_large_libraries():
     assert parsing.FULL_MAX_FILE_BYTES == 128 * 1024 * 1024
-    assert parsing.FULL_MAX_TOTAL_BYTES == 8 * 1024 * 1024 * 1024
-    assert parsing.FULL_MAX_FILES == 100_000
-    assert parsing.FULL_MAX_ENTRIES == 500_000
+    assert parsing.FULL_MAX_TOTAL_BYTES == 16 * 1024 * 1024 * 1024
+    assert parsing.FULL_MAX_FILES == 400_000
+    assert parsing.FULL_MAX_ENTRIES == 2_000_000
     assert parsing.FULL_MAX_DOCUMENT_CHARS == 128_000_000
-    assert parsing.FULL_MAX_CHUNKS == 1_000_000
+    assert parsing.FULL_MAX_CHUNKS == 2_000_000
 
 
 @pytest.mark.parametrize("mode", ["unknown", "FULL", "", None, []])

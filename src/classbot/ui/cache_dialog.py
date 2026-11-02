@@ -370,7 +370,7 @@ class CacheDialog(QDialog):
         self._mutate(
             "clear_library",
             lambda: self.manager.clear_library(
-                library.key, protected_keys=self._protected_keys  # gitleaks:allow -- cache identifiers, not credentials
+                library.key, protected_keys=self._protected_keys
             ),
         )
 

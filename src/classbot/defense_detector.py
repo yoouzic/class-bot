@@ -7,10 +7,12 @@ from collections import OrderedDict, deque
 from uuid import uuid4
 
 from classbot.domain import QuestionCandidate, TranscriptEvent
+from classbot.spoken_text import normalize_spoken_text
 
 _QUESTION = re.compile(
-    r"为什么|为何|如何|怎么|什么|哪些|哪种|哪个|多少|几次|多大|多久|是否|"
-    r"有没有|能否|能不能|可不可以|要不要|需不需要|凭什么|有何|何处|[吗呢?？]$"
+    r"为什么|为何|如何|怎么|什么|哪些|哪种|哪个|哪里|多少|几次|多大|多久|是否|"
+    r"有没有|能否|能不能|可不可以|要不要|需不需要|凭什么|有何|何处|"
+    r"是不是|谁|怎样|哪几|在哪|会不会|[吗呢?？]$"
 )
 _REQUEST = re.compile(
     r"(?:^|[，,：:]|请|能否|能不能|麻烦|可以)(?:你们|你)?(?:再|具体|详细|简单)?"
@@ -27,7 +29,12 @@ _MANAGEMENT = re.compile(
     r"[？?。]*$"
 )
 _INCOMPLETE = re.compile(
-    r"(?:为什么|为何|如何|怎么|是否|能否|因为|以及|为什么要|如何去)[？?。\s]*$"
+    r"^(?:为什么|为何|如何|怎么|是否|能否)[？?。\s]*$|"
+    r"(?:因为|以及|为什么要|如何去)[？?。\s]*$"
+)
+_SMALL_TALK = re.compile(
+    r"^(?:你好|大家好|早上好|晚上好|谢谢|多谢|辛苦了|再见|拜拜|吃了吗|最近怎么样)"
+    r"[。！？!?，,\s]*$"
 )
 
 
@@ -42,7 +49,7 @@ class DefenseQuestionDetector:
         self._segment += 1
 
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
-        raw = event.text.strip()
+        raw = normalize_spoken_text(event.text.strip())
         segment = event.segment_id if event.segment_id is not None else self._segment
         clauses = [
             part.strip()
@@ -59,6 +66,7 @@ class DefenseQuestionDetector:
                 len(stripped) >= 3
                 and not _NARRATION.search(stripped)
                 and not _MANAGEMENT.search(clause)
+                and not _SMALL_TALK.search(stripped)
                 and not _INCOMPLETE.search(clause)
                 and (question or request is not None)
             )
@@ -92,8 +100,22 @@ class DefenseQuestionDetector:
         self._active.move_to_end(segment)
         while len(self._active) > 16:
             self._active.popitem(last=False)
+        score = self._score(raw, normalized, bool(request), event.is_final)
         return [
             QuestionCandidate(
-                question_id, text, self.subject, 0.8, event.is_final, context
+                question_id, text, self.subject, score, event.is_final, context
             )
         ]
+
+    @staticmethod
+    def _score(raw: str, normalized: str, request: bool, is_final: bool) -> float:
+        score = 0.0
+        if "?" in raw or "？" in raw:
+            score += 0.35
+        if _QUESTION.search(normalized):
+            score += 0.45
+        if request:
+            score += 0.2
+        if is_final:
+            score += 0.1
+        return min(score, 1.0)

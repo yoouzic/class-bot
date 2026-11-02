@@ -30,8 +30,8 @@ def index_for(tmp_path, chunks, selected):
 
 
 def test_long_line_slice_retains_subject_from_an_actual_preceding_chunk(tmp_path):
-    lead = "ExampleModel processes offline batches rather than live input."
-    text = "# Research report\n## ExampleModel / Missing capabilities\n\n" + lead + "\n\n" + "isolated block; " * 140
+    lead = "Stage3B uses event Monte Carlo rather than the analytic approximation."
+    text = "# Research report\n## Stage3B / Missing capabilities\n\n" + lead + "\n\n" + "isolated block; " * 140
     chunks = [KnowledgeChunk("report.md", locator, value)
               for locator, value in parsing._text_chunks(text, code=False)]
     assert len(chunks) >= 3
@@ -40,22 +40,22 @@ def test_long_line_slice_retains_subject_from_an_actual_preceding_chunk(tmp_path
     assert hit.text == chunks[2].text
     assert hit.source == chunks[2].source
     assert hit.section_context == (
-        "# Research report\n## ExampleModel / Missing capabilities\n前文说明：" + lead
+        "# Research report\n## Stage3B / Missing capabilities\n前文说明：" + lead
     )
     assert hit.section_source.splitlines() == [chunks[0].source] * 3
 
 
 def test_section_lead_identifies_subject_when_title_alone_does_not(tmp_path):
     chunks = [
-        KnowledgeChunk("report.md", "lines 86–91", "previous section text\n\n## 4. ExampleModel / Missing capabilities"),
-        KnowledgeChunk("report.md", "lines 92–93", "- ExampleModel uses offline batch processing with deterministic inputs.\n- Another detail."),
-        KnowledgeChunk("report.md", "lines 94–95", "independent example batches without persistent session state"),
+        KnowledgeChunk("report.md", "lines 86–91", "previous section text\n\n## 4. Stage3B / Missing capabilities"),
+        KnowledgeChunk("report.md", "lines 92–93", "- Stage3B uses classical event Monte Carlo, not an analytic reference.\n- Another detail."),
+        KnowledgeChunk("report.md", "lines 94–95", "isolated fixed-parameter blocks without detector memory"),
         KnowledgeChunk("report.md", "lines 96–98", "## Different model\nfuture text must not be used"),
     ]
 
     hit = index_for(tmp_path, chunks, 2).search("limitations", limit=1)[0]
 
-    assert "offline batch processing" in hit.section_context
+    assert "classical event Monte Carlo" in hit.section_context
     assert "Different model" not in hit.section_context
     assert hit.section_source.splitlines() == [chunks[0].source, chunks[1].source]
     assert hit.text == chunks[2].text

@@ -12,6 +12,13 @@ from classbot.asr import funasr_streaming
 MODEL_ID = "installed-package/streaming-model"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_model_cache():
+    funasr_streaming.clear_model_cache()
+    yield
+    funasr_streaming.clear_model_cache()
+
+
 def snapshot(tmp_path):
     root = tmp_path / "cached"
     root.mkdir()
@@ -25,9 +32,9 @@ def snapshot(tmp_path):
     return root
 
 
-def dependencies(monkeypatch, cached, *, load_error=None):
+def dependencies(monkeypatch, cached, *, load_error=None, model=None):
     calls = {"snapshot": [], "model": []}
-    model = object()
+    model = object() if model is None else model
 
     def resolve(model_id, **kwargs):
         calls["snapshot"].append((model_id, kwargs))
@@ -121,3 +128,43 @@ def test_nested_sequence_artifacts_are_checked_before_selecting_the_local_model(
         monkeypatch.setattr(funasr_streaming.json, "loads", lambda _value: metadata)
     funasr_streaming.build_model("cpu")
     assert calls["model"][0]["model"] == (str(root) if present else "paraformer-zh-streaming")
+
+
+class WarmupRecordingModel:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return [{"text": ""}]
+
+
+def test_built_streaming_model_is_warmed_with_one_silent_chunk(tmp_path, monkeypatch):
+    root = snapshot(tmp_path)
+    recording = WarmupRecordingModel()
+    _calls, _model = dependencies(monkeypatch, root, model=recording)
+    funasr_streaming.build_model("cpu")
+
+    warmup = recording.calls[0]
+    assert warmup["is_final"] is False
+    assert warmup["input"].size == funasr_streaming._CHUNK_SAMPLES
+    assert warmup["cache"] == {}
+
+
+def test_model_without_generate_interface_skips_warmup(tmp_path, monkeypatch):
+    root = snapshot(tmp_path)
+    _calls, model = dependencies(monkeypatch, root)
+    assert funasr_streaming.build_model("cpu") is model
+
+
+def test_model_cache_reuses_the_warm_model_across_builds(tmp_path, monkeypatch):
+    root = snapshot(tmp_path)
+    calls, _model = dependencies(monkeypatch, root)
+
+    first = funasr_streaming.build_model("cpu")
+    assert funasr_streaming.build_model("cpu") is first
+    assert len(calls["model"]) == 1
+
+    funasr_streaming.clear_model_cache()
+    funasr_streaming.build_model("cpu")
+    assert len(calls["model"]) == 2

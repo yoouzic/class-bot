@@ -11,6 +11,14 @@ from classbot.llm.deepseek_client import DeepSeekClient
 from classbot.pipeline import LivePipeline
 
 
+@pytest.fixture(autouse=True)
+def _web_search_off(monkeypatch):
+    """Local-discipline tests run offline; web fallback has its own tests."""
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+
+
+
 def _sse(answer):
     return "data: " + json.dumps({"choices": [{"delta": {"content": answer}}]}, ensure_ascii=False) + "\n\ndata: [DONE]\n"
 
@@ -98,6 +106,7 @@ async def test_premise_and_scope_contract_reaches_real_request_without_rewriting
         assert "【依据不足】" not in card.answer
     else:
         assert card.answer == f"【资料事实】{excerpt}[S1]"
+    assert card.notice == ""
     assert card.sources == ("[S1] 合成方案.md · lines 7–9",)
 
 
@@ -118,7 +127,11 @@ async def test_classroom_keeps_its_existing_prompt_and_context_in_real_request(m
         await asyncio.gather(*pipeline._answer_tasks)
         await client.aclose()
     assert len(requests) == 1
-    assert requests[0]["messages"][1]["content"] == "学科：课堂\n问题：背景信息：课堂背景\n问题：它为什么成立？"
+    user_content = requests[0]["messages"][1]["content"]
+    assert "背景信息：课堂背景" in user_content
+    assert "问题：它为什么成立？" in user_content
+    assert "本地材料候选" in user_content
+    assert "网络检索候选" in user_content
     system = requests[0]["messages"][0]["content"]
     assert system.startswith("你是一个课堂问答助手。只输出直接、准确、简短的中文答案（1～3句）")
     assert "否定能力" not in system and "能力缺失" not in system and "逐条检查直接支持" not in system

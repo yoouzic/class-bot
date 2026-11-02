@@ -6,7 +6,8 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
-from classbot.domain import AnswerCard, CardStatus
+from classbot.domain import AnswerCard, CardStatus, SourceKind, SourceRef
+from classbot.ui import capture_affinity
 from classbot.ui.main_window import MainWindow
 
 
@@ -36,6 +37,8 @@ def make_card(
     status: CardStatus = CardStatus.DETECTED,
     error: str | None = None,
     timestamp_ms: int = 0,
+    source_refs: tuple[SourceRef, ...] = (),
+    notice: str = "",
 ) -> AnswerCard:
     return AnswerCard(
         question_id=question_id,
@@ -45,6 +48,8 @@ def make_card(
         status=status,
         error=error,
         timestamp_ms=timestamp_ms,
+        source_refs=source_refs,
+        notice=notice,
     )
 
 
@@ -344,6 +349,48 @@ def test_cancelled_candidate_does_not_display_waiting_for_answer(window):
     assert "已取消回答" in window.cards_list.item(0).text()
 
 
+def test_card_with_source_refs_uses_chinese_labels_and_legend(window):
+    ref = SourceRef(
+        "S1", SourceKind.CODE, "solve_model.py",
+        "D:\\项目\\src\\solve_model.py · L10-L24",
+    )
+    window.upsert_card(
+        make_card(
+            answer="答案[S1]",
+            status=CardStatus.ANSWERED,
+            source_refs=(ref,),
+        )
+    )
+    item = window.cards_list.item(0)
+    widget = window.cards_list.itemWidget(item)
+    answer_label = widget.findChild(QLabel, "answerTextLabel")
+    sources_label = widget.findChild(QLabel, "sourcesTextLabel")
+    sources_title = widget.findChild(QLabel, "sourcesTitleLabel")
+    assert ">solve_model.py<" in answer_label.text()
+    assert "[S1]" not in answer_label.text()
+    assert "[代码]" in sources_label.text()
+    assert "D:\\项目\\src\\solve_model.py" in sources_label.text()
+    assert "绿=本地" in sources_title.text()
+
+
+def test_card_notice_and_html_escape(window):
+    ref = SourceRef("S1", SourceKind.TEXTBOOK, "教", "PDF第1页")
+    window.upsert_card(
+        make_card(
+            answer="<script>alert(1)</script>",
+            status=CardStatus.ANSWERED,
+            notice="有 1 句未标注来源",
+            source_refs=(ref,),
+        )
+    )
+    widget = window.cards_list.itemWidget(window.cards_list.item(0))
+    answer_label = widget.findChild(QLabel, "answerTextLabel")
+    notice_label = widget.findChild(QLabel, "noticeLabel")
+    assert "<script>" not in answer_label.text()
+    assert "&lt;script&gt;" in answer_label.text()
+    assert "有 1 句未标注来源" in notice_label.text()
+
+
 def test_card_limit_evicts_oldest_new_card_but_not_existing_upsert(window):
     for index in range(128):
         window.upsert_card(
@@ -372,3 +419,128 @@ def test_card_limit_evicts_oldest_new_card_but_not_existing_upsert(window):
     assert "q128" in window._cards
     assert "问题 1" in window.cards_list.item(0).text()
     assert "问题 128" in window.cards_list.item(127).text()
+
+
+def _patch_capture(
+    monkeypatch,
+    *,
+    supported: bool = True,
+    apply_result: bool = True,
+    calls: list[tuple[int, bool]] | None = None,
+):
+    monkeypatch.setattr(capture_affinity, "is_supported", lambda: supported)
+    record = calls if calls is not None else []
+
+    def fake_set_capture_visible(hwnd: int, *, visible: bool) -> bool:
+        record.append((hwnd, visible))
+        return apply_result
+
+    monkeypatch.setattr(capture_affinity, "set_capture_visible", fake_set_capture_visible)
+    return record
+
+
+def test_capture_hiding_on_by_default_when_supported(monkeypatch):
+    _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        assert checkbox.text() == "对屏幕共享隐藏"
+        assert checkbox.isEnabled()
+        assert checkbox.isChecked()
+    finally:
+        window.close()
+
+
+def test_capture_hiding_unavailable_on_unsupported_platform(monkeypatch):
+    _patch_capture(monkeypatch, supported=False)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        assert not checkbox.isEnabled()
+        assert not checkbox.isChecked()
+    finally:
+        window.close()
+
+
+def test_showing_window_excludes_it_from_capture(monkeypatch):
+    calls = _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        window.show()
+    finally:
+        window.close()
+
+    assert len(calls) == 1
+    hwnd, visible = calls[0]
+    assert isinstance(hwnd, int)
+    assert visible is False
+
+
+def test_unsupported_window_never_touches_capture_api(monkeypatch):
+    calls = _patch_capture(monkeypatch, supported=False)
+    window = MainWindow("历史")
+    try:
+        window.show()
+        window.capture_hidden_checkbox.setChecked(True)
+    finally:
+        window.close()
+
+    assert calls == []
+
+
+def test_capture_hiding_toggle_switches_affinity(monkeypatch):
+    calls = _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        checkbox.setChecked(False)
+        checkbox.setChecked(True)
+    finally:
+        window.close()
+
+    assert [visible for _, visible in calls] == [True, False]
+
+
+def test_capture_hiding_failure_reverts_and_disables_checkbox(monkeypatch):
+    _patch_capture(monkeypatch, apply_result=False)
+    window = MainWindow("历史")
+    try:
+        window.show()
+        checkbox = window.capture_hidden_checkbox
+
+        assert not checkbox.isChecked()
+        assert not checkbox.isEnabled()
+        assert not checkbox.toolTip().endswith("系统支持。")
+
+        checkbox.setEnabled(True)
+        checkbox.setChecked(True)
+
+        assert not checkbox.isChecked()
+        assert not checkbox.isEnabled()
+    finally:
+        window.close()
+
+
+def test_capture_hiding_failure_after_prior_apply_restores_checked(monkeypatch):
+    outcomes = iter([True, False])
+    monkeypatch.setattr(capture_affinity, "is_supported", lambda: True)
+
+    def flaky_set_capture_visible(hwnd: int, *, visible: bool) -> bool:
+        return next(outcomes)
+
+    monkeypatch.setattr(
+        capture_affinity, "set_capture_visible", flaky_set_capture_visible
+    )
+    window = MainWindow("历史")
+    try:
+        window.show()
+        checkbox = window.capture_hidden_checkbox
+        assert checkbox.isChecked()
+        assert checkbox.isEnabled()
+
+        checkbox.setChecked(False)
+
+        assert checkbox.isChecked()
+        assert not checkbox.isEnabled()
+    finally:
+        window.close()

@@ -780,3 +780,341 @@ async def test_continuous_speech_bounds_retained_refinement_audio(monkeypatch):
         assert recognizer._input_queue.empty()
     finally:
         await recognizer.stop()
+
+
+class FakeRefiner:
+    def __init__(self, *, loaded=False, text="", error=None):
+        self._loaded = loaded
+        self.text = text
+        self.error = error
+        self.refine_calls = []
+        self.load_calls = 0
+
+    @property
+    def loaded(self):
+        return self._loaded
+
+    def load(self):
+        self.load_calls += 1
+        self._loaded = True
+
+    def refine(self, samples):
+        self.refine_calls.append(samples)
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
+class NeverLoadedRefiner:
+    loaded = False
+
+    def __init__(self):
+        self.refine_calls = []
+        self.load_calls = 0
+
+    def load(self):
+        self.load_calls += 1
+
+    def refine(self, samples):
+        self.refine_calls.append(samples)
+        raise AssertionError("offline refine must not run while unloaded")
+
+
+class _StreamingRefinementModel:
+    """Streams partials, then offers a full-segment decode on final."""
+
+    def __init__(self, refined_text="完整最终文本"):
+        self.calls = []
+        self.refined_text = refined_text
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs["is_final"] and kwargs["input"].size > 160:
+            return [{"text": self.refined_text}]
+        if kwargs["is_final"]:
+            return [{"text": ""}]
+        return [{"text": "实时片段"}]
+
+
+@pytest.mark.asyncio
+async def test_loaded_offline_refiner_replaces_streaming_refinement(monkeypatch):
+    model = _StreamingRefinementModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    refiner = FakeRefiner(loaded=True, text="主观违心主义，带标点。")
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        corrections={"违心": "唯心"},
+        final_refinement=True,
+        refiner=refiner,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert final.text == "主观唯心主义，带标点。"
+    assert final.is_final is True
+    assert len(refiner.refine_calls) == 1
+    assert refiner.refine_calls[0].size == 400
+    # The offline refiner answered, so no full-segment streaming re-decode ran.
+    assert all(call["input"].size <= 160 for call in model.calls)
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_unloaded_refiner_falls_back_to_streaming_refinement(monkeypatch):
+    model = _StreamingRefinementModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    refiner = NeverLoadedRefiner()
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=True,
+        refiner=refiner,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert final.text == "完整最终文本"
+    assert refiner.refine_calls == []
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_failing_offline_refinement_falls_back_to_streaming(monkeypatch):
+    model = _StreamingRefinementModel()
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    refiner = FakeRefiner(loaded=True, text="被忽略", error=RuntimeError("offline broken"))
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=True,
+        refiner=refiner,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(320))
+    await _next_event(events)
+    await _next_event(events)
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert final.text == "完整最终文本"
+    assert len(refiner.refine_calls) == 1
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_session_start_prewarms_refiner_load(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    refiner = FakeRefiner(loaded=False, text="")
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=True,
+        refiner=refiner,
+    )
+
+    await recognizer.start()
+    try:
+        await _wait_until(lambda: refiner.load_calls == 1)
+    finally:
+        await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_refiner_is_not_prewarmed_without_final_refinement(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    refiner = FakeRefiner(loaded=False, text="")
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=False,
+        refiner=refiner,
+    )
+
+    await recognizer.start()
+    try:
+        assert refiner.load_calls == 0
+        assert recognizer._refiner_load_task is None
+    finally:
+        await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_refiner_load(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+
+    class SlowLoadingRefiner:
+        def __init__(self):
+            self._loaded = False
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        @property
+        def loaded(self):
+            return self._loaded
+
+        def load(self):
+            self.started.set()
+            self.release.wait(timeout=3)
+            self._loaded = True
+
+    refiner = SlowLoadingRefiner()
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=True,
+        refiner=refiner,
+    )
+
+    await recognizer.start()
+    try:
+        await _wait_until(lambda: refiner.started.is_set())
+        await asyncio.wait_for(recognizer.stop(), timeout=2)
+        assert recognizer._refiner_load_task is None
+    finally:
+        refiner.release.set()
+        await recognizer.stop()
+
+
+class FakePunctuator:
+    def __init__(self, *, loaded=False, suffix="，", error=None):
+        self._loaded = loaded
+        self.suffix = suffix
+        self.error = error
+        self.punctuate_calls = []
+        self.load_calls = 0
+
+    @property
+    def loaded(self):
+        return self._loaded
+
+    def load(self):
+        self.load_calls += 1
+        self._loaded = True
+
+    def punctuate(self, text):
+        self.punctuate_calls.append(text)
+        if self.error is not None:
+            raise self.error
+        return text + self.suffix
+
+
+class NeverLoadingPunctuator:
+    loaded = False
+
+    def __init__(self):
+        self.punctuate_calls = []
+        self.load_calls = 0
+
+    def load(self):
+        self.load_calls += 1
+
+    def punctuate(self, text):
+        self.punctuate_calls.append(text)
+        raise AssertionError("partial punctuation must not run while unloaded")
+
+
+@pytest.mark.asyncio
+async def test_loaded_punctuator_marks_partial_events_only(monkeypatch):
+    model = FakeModel(["你好", "你好啊"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    punctuator = FakePunctuator(loaded=True, suffix="，")
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        partial_punctuator=punctuator,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    partial = await _next_event(events)
+    # internal accumulation stays raw; only the emitted partial is punctuated
+    assert recognizer._segment_text == "你好"
+    recognizer.push_audio(_pcm(80))
+    recognizer.finish_segment()
+    final = await _next_event(events)
+
+    assert partial.text == "你好，"
+    assert partial.is_final is False
+    assert final.text == "你好啊"
+    assert final.is_final is True
+    assert punctuator.punctuate_calls == ["你好"]
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_unloaded_punctuator_keeps_raw_partials(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    punctuator = NeverLoadingPunctuator()
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        partial_punctuator=punctuator,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    partial = await _next_event(events)
+
+    assert partial.text == "你好"
+    assert punctuator.punctuate_calls == []
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_failing_punctuation_degrades_to_raw_partial(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    punctuator = FakePunctuator(loaded=True, error=RuntimeError("punc broken"))
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        partial_punctuator=punctuator,
+    )
+    events = recognizer.events()
+
+    await recognizer.start()
+    recognizer.push_audio(_pcm(160))
+    partial = await _next_event(events)
+
+    assert partial.text == "你好"
+    assert len(punctuator.punctuate_calls) == 1
+
+    await recognizer.stop()
+
+
+@pytest.mark.asyncio
+async def test_punctuator_load_starts_even_without_final_refinement(monkeypatch):
+    model = FakeModel(["你好"])
+    monkeypatch.setattr(funasr_streaming, "build_model", lambda device: model)
+    punctuator = FakePunctuator(loaded=False)
+    recognizer = FunAsrStreamingRecognizer(
+        chunk_samples=160,
+        final_refinement=False,
+        partial_punctuator=punctuator,
+    )
+
+    await recognizer.start()
+    try:
+        await _wait_until(lambda: punctuator.load_calls == 1)
+    finally:
+        await recognizer.stop()

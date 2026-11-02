@@ -13,6 +13,14 @@ from classbot.llm.deepseek_client import DeepSeekClient, DeepSeekStreamError
 from classbot.pipeline import LivePipeline
 
 
+@pytest.fixture(autouse=True)
+def _web_search_off(monkeypatch):
+    """Request-contract tests run offline; web fallback has its own tests."""
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+
+
+
 def event(*, content=None, reasoning=None, finish=None):
     delta = {}
     if content is not None:

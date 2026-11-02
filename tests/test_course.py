@@ -114,3 +114,33 @@ def test_marxism_profile_covers_observed_asr_errors():
         "三维星": "三维性",
         "第一心原理": "第一性原理",
     }
+
+
+def test_find_reference_records_returns_page_label():
+    profile = course_module.CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第7页] 哲学的基本问题是思维和存在的关系问题。" * 20,
+        ),
+    )
+    records = profile.find_reference_records("哲学的基本问题是什么", limit=1)
+    assert len(records) == 1
+    assert records[0].page_label == "第7页"
+    assert "哲学的基本问题" in records[0].text
+
+
+def test_reference_coverage_matches_and_misses():
+    profile = course_module.CourseProfile(
+        course_id="demo",
+        reference_chunks=(
+            "[第2页] 物质决定意识，意识对物质具有能动的反作用。",
+        ),
+    )
+    assert profile.reference_coverage("物质和意识的关系") >= 0.55
+    assert profile.reference_coverage("随机森林的泛化性") == 0.0
+    assert profile.reference_coverage("是什么") == 1.0
+
+
+def test_reference_coverage_without_references_is_zero():
+    profile = course_module.CourseProfile(course_id="demo")
+    assert profile.reference_coverage("任何一个问题") == 0.0

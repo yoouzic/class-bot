@@ -28,8 +28,9 @@ dependencies = [
 [project.optional-dependencies]
 asr = [
     "funasr>=1.1,<2",
-    "torch>=2.2,<3",
-    "torchaudio>=2.2,<3",
+    # 2.7 is the first torch line usable on NVIDIA Blackwell (RTX 50) GPUs.
+    "torch>=2.7,<3",
+    "torchaudio>=2.7,<3",
 ]
 dev = [
     "pytest>=8,<10",

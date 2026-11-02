@@ -3,7 +3,15 @@ from collections.abc import AsyncIterator, Iterable
 
 import pytest
 
-from classbot.domain import AnswerCard, CardStatus, QuestionCandidate, TranscriptEvent
+from classbot.domain import (
+    AnswerCard,
+    CardStatus,
+    QuestionCandidate,
+    SourceKind,
+    SourceRef,
+    TranscriptEvent,
+)
+from classbot.llm.deepseek_client import PreparedAnswer
 from classbot.pipeline import LivePipeline
 
 
@@ -54,7 +62,10 @@ class FakeClient:
         self.calls: list[tuple[str, str]] = []
         self.close_calls = 0
 
-    def stream_answer(self, question: str, subject: str) -> AsyncIterator[str]:
+    def stream_answer(
+        self, question: str, subject: str, *, prepared: object | None = None
+    ) -> AsyncIterator[str]:
+        del prepared
         self.calls.append((question, subject))
         stream = self._streams[question]
 
@@ -950,3 +961,34 @@ async def test_callback_errors_do_not_pollute_client_error_status() -> None:
 
     assert card_refs[-1].status is CardStatus.ANSWERED
     assert card_refs[-1].error is None
+
+
+class PreparedFakeClient(FakeClient):
+    def __init__(self, prepared, streams):
+        super().__init__(streams)
+        self.prepared = prepared
+
+    async def prepare_answer(self, question, subject):
+        return self.prepared
+
+    def stream_answer(self, question, subject, *, prepared=None):
+        return super().stream_answer(question, subject)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_source_refs_and_removes_unknown_tags():
+    ref = SourceRef("S1", SourceKind.TEXTBOOK, "教", "PDF第1页")
+    prepared = PreparedAnswer([], ("教材：PDF第1页",), (ref,))
+    client = PreparedFakeClient(prepared, {"问题": ["答案[S9]"]})
+    pipeline = LivePipeline(
+        FakeRecognizer([event("问题")]),
+        FakeDetector({"问题": [candidate("q1", "问题")]}),
+        client,
+        lambda _: None,
+        lambda *_: None,
+    )
+    await pipeline.run()
+    card = pipeline._states["q1"].card
+    assert card.source_refs == (ref,)
+    assert card.answer == "答案"
+    assert "不存在的来源编号" in card.notice

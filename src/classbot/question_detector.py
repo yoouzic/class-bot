@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from classbot.domain import QuestionCandidate, TranscriptEvent
+from classbot.spoken_text import normalize_spoken_text
 
 STRONG_QUESTION_MARKERS = (
     "哪些",
@@ -30,6 +31,12 @@ STRONG_QUESTION_MARKERS = (
     "是不是",
     "能不能",
     "可不可以",
+    "会不会",
+    "什么时候",
+    "哪一",
+    "哪一个",
+    "哪几个",
+    "究竟",
     "什么是",
     "啥意思",
     "什么意思",
@@ -37,6 +44,8 @@ STRONG_QUESTION_MARKERS = (
     "对吧",
     "是吧",
     "记不记得",
+    "在哪",
+    "哪里",
 )
 QUESTION_PARTICLES = ("吗", "呢")
 QUESTION_MARKS = ("?", "？")
@@ -53,18 +62,25 @@ QUESTION_ENDINGS = (
     "是不是",
     "能不能",
     "可不可以",
+    "会不会",
     "什么",
     "哪个",
     "哪一个",
+    "哪几个",
     "谁",
     "为什么",
     "为何",
     "如何",
     "怎么",
+    "怎样",
+    "怎么样",
+    "在哪",
+    "哪里",
     "多少",
     "多久",
     "是否",
     "对不对",
+    "来着",
 )
 NARRATIVE_CUES = (
     "现在打开教材",
@@ -150,6 +166,7 @@ _SAFE_TOPIC_PREFIXES = (
 _SAFE_NAME_PREFIX_RE = re.compile(
     r"^(?!(?:请问|为什么|为何|如何|怎么|是否|有没有|是不是|"
     r"能不能|可不可以|什么|哪个|哪些|哪种|谁))"
+    r"(?!(?:属于|就是|称为|叫做|分为|包括|具有|认为|以为|所谓))"
     r"(?!(?:哲学|世界观|物质|意识|唯物|唯心|马克思|辩证|"
     r"第一性|运动|时间|空间|方法论))"
     r"[\u4e00-\u9fff]{2,4}(?=(?:第?\d+题|"
@@ -165,6 +182,139 @@ _CONFIRMATION_ONLY = ("对不对", "对吧", "是吧", "答案不就在这里吗
 _CONFIRMATION_RE = re.compile(
     r"(?:对不对|对吧|是吧|答案不就在这里)(?:[\u4e00-\u9fff]{0,6})?$"
 )
+_PARTICLE_TAILS = ("呢", "吗", "呀", "啊", "吧", "来着")
+_FILLER_PARTICLE_TAILS = ("呀", "啊", "吧", "来着")
+_CONTEXT_QUESTION_SIGNALS = (
+    "什么", "哪", "谁", "为什么", "为何", "如何", "怎么",
+    "多少", "多久", "是否", "有没有", "是不是", "能不能",
+    "可不可以", "会不会",
+)
+_SHORT_CONTENT_CUES = (
+    "支持", "部署", "需要", "可以", "能", "有", "是", "会", "要", "用",
+    "做", "实现", "调用", "安装", "运行", "配置", "可行", "复杂", "区别",
+    "风险", "效果", "性能", "版本", "接口", "数据", "模型", "方案", "功能",
+    "步骤", "参数", "准确率", "召回率", "指标", "延迟", "内存", "显存",
+    "训练", "测试", "实验", "结果", "原因", "原理", "定义", "作用", "流程",
+    "讲",
+)
+_SHORT_MANAGEMENT_RE = re.compile(
+    r"(?:能?听(?:见|得到|得见)(?:我)?(?:说话)?|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|"
+    r"共享屏幕|摄像头|点(?:个)?名|到齐|来齐|安静|休息|明白|听懂|清楚|懂|看到|看见)"
+    r"(?:了|好了|一下|清楚|好)?(?:吗|呀|啊|吧|呢)?$"
+)
+_GREETING_RE = re.compile(
+    r"^(?:你好|大家好|各位好|老师好|早上好|晚上好|最近好吗|吃了吗|辛苦了|谢谢)"
+)
+# 含这些词的"呀/啊/吧/来着"句是在陈述，不是在追问。
+_STATEMENT_MARKERS = (
+    "就是", "这样", "那样", "很", "太", "挺", "真的", "确实", "已经",
+    "刚才", "只是",
+)
+# 上下文中的短应答/过渡语，不是对上一个问题的追问。
+_SHORT_ACK_STEMS = frozenset(
+    {
+        "好", "好的", "好吧", "那好", "行", "可以", "可以的", "是", "是的",
+        "对", "对的", "这样", "就这样", "先这样", "继续", "我们继续",
+        "好的吧", "是这样的", "好了", "行了", "可以了", "对了", "是了",
+        "是这样", "是那样",
+    }
+)
+# 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
+_DISCOURSE_CONTINUATION_PREFIXES = (
+    "因为", "所以", "但是", "可是", "然后", "而且", "不过",
+)
+# 含这些词时是在把话题往后推，不是在追问当前问题。
+_DISCOURSE_CONTINUATION_MARKERS = (
+    "等一下", "等会", "后面", "稍后", "再讲", "再说", "先讲",
+    "再讨论", "下一个", "继续看", "继续讲",
+)
+
+
+def _is_particle_question(
+    normalized_text: str,
+    *,
+    has_context: bool,
+) -> bool:
+    if not normalized_text or not normalized_text.endswith(_PARTICLE_TAILS):
+        return False
+    if normalized_text.endswith("着呢"):
+        return False
+    if (
+        _MANAGEMENT_RE.search(normalized_text)
+        or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        or _GREETING_RE.search(normalized_text)
+        or _CONFIRMATION_RE.search(normalized_text)
+    ):
+        return False
+    if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+        return False
+    stem = normalized_text
+    tail = ""
+    for candidate in _PARTICLE_TAILS:
+        if stem.endswith(candidate):
+            tail = candidate
+            stem = stem[: -len(candidate)]
+            break
+    if tail != "吗" and any(
+        marker in normalized_text
+        for marker in _DISCOURSE_CONTINUATION_MARKERS
+    ):
+        return False
+    if tail in _FILLER_PARTICLE_TAILS and any(
+        marker in normalized_text for marker in _STATEMENT_MARKERS
+    ):
+        # A short "呀/啊/吧/来着" clause containing these words is a statement,
+        # with or without context.
+        return False
+    if has_context:
+        if tail != "吗" and stem in _SHORT_ACK_STEMS:
+            return False
+        if len(normalized_text) == 2 and normalized_text not in {
+            "它呢", "他呢", "她呢",
+        }:
+            return False
+        return len(normalized_text) >= 2
+    if len(normalized_text) < 5:
+        return False
+    if tail in _FILLER_PARTICLE_TAILS:
+        if tail == "来着":
+            return any(
+                signal in normalized_text
+                for signal in _CONTEXT_QUESTION_SIGNALS
+            )
+        if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
+            return True
+        # 呀/啊/吧 also end ordinary statements; one-character cues such as
+        # "有" inside "所有之上" are too weak to prove a question.
+        return any(
+            len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
+        )
+    if "的" in normalized_text or normalized_text.startswith(
+        ("这个", "那个", "它", "他们", "她们")
+    ):
+        return True
+    if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
+        return True
+    if tail == "吗":
+        return any(cue in stem for cue in _SHORT_CONTENT_CUES)
+    # A bare "呢" such as "我们讲完了呢" is usually narration; one-character
+    # cues ("讲" in "讲完了") are too weak without the 吗 tail.
+    return any(
+        len(cue) >= 2 and cue in stem for cue in _SHORT_CONTENT_CUES
+    )
+
+
+def _is_short_question(
+    normalized_text: str,
+    *,
+    has_context: bool,
+    minimum_length: int,
+) -> bool:
+    if len(normalized_text) >= minimum_length:
+        return False
+    return _is_particle_question(normalized_text, has_context=has_context)
+
+
 _INCOMPLETE_PARTIAL_TAILS = (
     "是如何",
     "是怎么",
@@ -172,6 +322,7 @@ _INCOMPLETE_PARTIAL_TAILS = (
     "是为什么",
     "是哪些",
     "是哪个",
+    "是哪一个",
 )
 _TRAILING_FILLERS = (
     "同学们",
@@ -209,10 +360,35 @@ _ACADEMIC_HINTS = (
     "关系",
     "特性",
     "选项",
+    "联系",
+    "矛盾",
+    "规律",
+    "本质",
+    "现象",
+    "实体",
+    "理念",
+    "定义",
+    "数据",
+    "接口",
+    "配置",
+    "版本",
+    "函数",
+    "参数",
+)
+_COMPREHENSION_TAILS = (
+    "能理解吧",
+    "理解吧",
+    "能理解吗",
+    "能明白吧",
+    "明白了吧",
+    "听懂了吗",
+    "懂了吗",
+    "清楚了吗",
 )
 _PARTICLE_QUESTION_SIGNALS = (
     "哪些",
     "怎样",
+    "怎么样",
     "哪几",
     "哪两",
     "分几",
@@ -221,6 +397,7 @@ _PARTICLE_QUESTION_SIGNALS = (
     "是不是",
     "能不能",
     "可不可以",
+    "会不会",
     "什么",
     "哪个",
     "谁",
@@ -228,6 +405,8 @@ _PARTICLE_QUESTION_SIGNALS = (
     "为何",
     "如何",
     "怎么",
+    "在哪",
+    "哪里",
     "印象",
     "记得",
     "请问",
@@ -244,7 +423,7 @@ _NONQUESTION_MARKER_PREFIXES = (
     "说明",
 )
 _NONQUESTION_START_PREFIXES = ("就是", "不管", "强调的就是")
-_TRAILING_QUESTION_PARTICLES = ("吗", "呢", "呀", "啊", "吧")
+_TRAILING_QUESTION_PARTICLES = ("吗", "呢", "呀", "啊", "吧", "来着")
 _TEACHER_ANSWER_CUES = (
     "很好",
     "非常好",
@@ -271,6 +450,14 @@ _INCOMPLETE_QUESTION_RE = re.compile(
     r"什么样的(?:情(?:况(?:下+)?)?)?(?:呢|啊|呀|吧)?$|"
     r"(?:是不是|能不能|可不可以)(?:啊|呀|呢|吧|不是你)*$"
 )
+_ALTERNATIVE_RIGHT_WRONG_RE = re.compile(r"(?:对的|错的|正确|错误)[，,]?还是")
+
+
+def _is_alternative_question(normalized_text: str) -> bool:
+    """究竟…还是 and 对的…还是 pose a choice; either side is the answer."""
+    if "究竟" in normalized_text and "还是" in normalized_text:
+        return True
+    return bool(_ALTERNATIVE_RIGHT_WRONG_RE.search(normalized_text))
 
 
 @dataclass(slots=True)
@@ -325,6 +512,24 @@ def _normalized_clause(text: str) -> str:
     return normalize_text(text)
 
 
+def _restore_trailing_particle(raw_clause: str, normalized_clause: str) -> str:
+    """Re-attach a 呀/啊/吧 that filler stripping removed from a short clause.
+
+    In a long clause these characters are discourse fillers, not question
+    particles, so only short clauses are restored.
+    """
+    if len(normalized_clause) >= 10:
+        return normalized_clause
+    if any(
+        normalized_clause.endswith(ending) for ending in QUESTION_ENDINGS
+    ):
+        return normalized_clause
+    raw_normalized = normalize_text(raw_clause)
+    if raw_normalized and raw_normalized[-1] in {"呀", "啊", "吧"}:
+        return normalized_clause + raw_normalized[-1]
+    return normalized_clause
+
+
 def _has_teaching_lead(text: str) -> bool:
     return bool(
         re.search(r"(?:学习|了解|讲解|介绍|掌握|回顾)(?:了|过)?", text)
@@ -332,7 +537,7 @@ def _has_teaching_lead(text: str) -> bool:
 
 
 def _valid_internal_question_suffix(marker: str, suffix: str) -> bool:
-    suffix = suffix.lstrip("吗呢呀啊吧")
+    suffix = suffix.lstrip("吗呢呀啊吧呃嗯")
     if not suffix:
         return True
     if any(suffix.startswith(prefix) for prefix in _CLASSROOM_RESPONSE_CUES):
@@ -342,6 +547,10 @@ def _valid_internal_question_suffix(marker: str, suffix: str) -> bool:
     if suffix.startswith(("你", "我", "他", "大家", "同学")):
         return False
     if marker in {"什么", "哪个", "哪一个", "谁", "哪年", "哪一年", "多少", "多久"}:
+        if len(suffix) <= 2:
+            # 多少度 / 几个人 / 什么料: a short unit or noun completes the
+            # question without further words.
+            return True
         return suffix.startswith(
             (
                 "是",
@@ -370,6 +579,9 @@ def _looks_like_question_clause(
     raw_clause: str,
     normalized_clause: str,
     original_text: str,
+    *,
+    is_final: bool = False,
+    has_context: bool = False,
 ) -> bool:
     if not normalized_clause:
         return False
@@ -379,23 +591,56 @@ def _looks_like_question_clause(
         return False
     if QuestionDetector._has_question_mark(raw_clause):
         return True
-    if QuestionDetector._has_question_ending(
+    particle_text = normalized_clause
+    has_ending = QuestionDetector._has_question_ending(
         raw_clause, normalized_clause
-    ):
-        if normalized_clause.endswith(_INCOMPLETE_PARTIAL_TAILS):
-            return False
-        if normalized_clause.endswith(_TRAILING_QUESTION_PARTICLES) and not any(
-            signal in normalized_clause
-            for signal in _PARTICLE_QUESTION_SIGNALS
+    )
+    if not has_ending:
+        # 呀/啊/吧 were stripped as fillers; a short clause may still end in
+        # one as a question particle ("支持中文呀").
+        particle_text = _restore_trailing_particle(raw_clause, normalized_clause)
+        has_ending = particle_text != normalized_clause
+    if has_ending:
+        if not is_final and particle_text.endswith(
+            _INCOMPLETE_PARTIAL_TAILS
         ):
             return False
-        if normalized_clause.endswith("什么") and normalized_clause.count(
+        if particle_text.endswith("着呢"):
+            # "放着呢/坐着呢" is a continuative state, not a question 呢.
+            return False
+        if (
+            particle_text.endswith(_TRAILING_QUESTION_PARTICLES)
+            and not any(
+                signal in particle_text
+                for signal in _PARTICLE_QUESTION_SIGNALS
+            )
+            and (
+                len(particle_text) < 10
+                or _CONFIRMATION_RE.search(particle_text)
+                or (
+                    not particle_text.endswith("吗")
+                    and any(
+                        marker in particle_text
+                        for marker in _DISCOURSE_CONTINUATION_MARKERS
+                    )
+                )
+            )
+            and not _is_particle_question(
+                particle_text, has_context=has_context
+            )
+        ):
+            # A bare "…吗/呢" tail on a short clause is usually a filler or
+            # confirmation; a longer one ("…支持中文吗") is a real question.
+            # A discourse continuation ("等一下再讲呢") stays non-question
+            # even at 10 chars, where the length gate no longer applies.
+            return False
+        if particle_text.endswith("什么") and particle_text.count(
             "什么"
         ) > 1:
             return False
         return not (
             _has_teaching_lead(original_text)
-            and normalized_clause.startswith(("什么是", "什么样的"))
+            and particle_text.startswith(("什么是", "什么样的"))
         )
 
     if normalized_clause.startswith(
@@ -411,6 +656,8 @@ def _looks_like_question_clause(
             "可不可以",
             "请问",
             "什么是",
+            "是什么",
+            "究竟",
             "什么样的",
             "哪个",
             "哪些",
@@ -418,13 +665,32 @@ def _looks_like_question_clause(
             "谁",
         )
     ):
-        return not normalized_clause.endswith(_INCOMPLETE_PARTIAL_TAILS)
+        return is_final or not normalized_clause.endswith(
+            _INCOMPLETE_PARTIAL_TAILS
+        )
+
+    if _is_alternative_question(normalized_clause):
+        return is_final or not normalized_clause.endswith(
+            _INCOMPLETE_PARTIAL_TAILS
+        )
 
     for marker in sorted(STRONG_QUESTION_MARKERS, key=len, reverse=True):
         marker_start = normalized_clause.find(marker)
         if marker_start <= 0:
             continue
         if marker in ("对不对", "对吧", "是吧"):
+            continue
+        if marker.startswith("能") and normalized_clause[marker_start - 1] == "不":
+            # "不能不能" contains "能不能" across the boundary; that negation
+            # is not a yes/no question.
+            continue
+        marker_end = marker_start + len(marker)
+        if marker == "是否" and normalized_clause[marker_end : marker_end + 1] in {
+            "认",
+            "定",
+        }:
+            # "就是否认联系" splits 否认 into 是否+认; that 否 is not the
+            # interrogative 是否.
             continue
         if (
             _has_teaching_lead(original_text)
@@ -456,7 +722,11 @@ def _trim_teacher_answer(normalized_text: str) -> str:
         while marker_start >= 0:
             marker_end = marker_start + len(marker)
             suffix = normalized_text[marker_end:]
-            if suffix and any(cue in suffix for cue in _TEACHER_ANSWER_CUES):
+            # The cue must open the tail; a later mention such as "带着你
+            # 自己的一个答案" is an instruction, not the teacher answering.
+            if suffix and suffix.lstrip("所以因为那这就啊呃嗯").startswith(
+                _TEACHER_ANSWER_CUES
+            ):
                 topic_positions = [
                     normalized_text.rfind(topic, 0, marker_start + 1)
                     for topic in _SAFE_TOPIC_PREFIXES
@@ -467,6 +737,44 @@ def _trim_teacher_answer(normalized_text: str) -> str:
                 return normalized_text[:marker_end]
             marker_start = normalized_text.find(marker, marker_start + 1)
     return normalized_text
+
+
+def _has_question_form_evidence(normalized_text: str) -> bool:
+    """Clear interrogative form, independent of course vocabulary."""
+    if normalized_text.endswith((*QUESTION_ENDINGS, *QUESTION_PARTICLES)):
+        return True
+    if _is_alternative_question(normalized_text):
+        return True
+    if "到底" in normalized_text and any(
+        marker in normalized_text
+        for marker in ("怎样", "怎么", "如何", "什么", "谁", "哪个", "哪些")
+    ):
+        return True
+    if any(
+        word in normalized_text for word in ("什么时候", "啥时候", "何时")
+    ):
+        return True
+    return normalized_text.startswith(
+        (
+            "为什么",
+            "为何",
+            "请问",
+            "究竟",
+            "如何",
+            "怎么",
+            "什么是",
+            "是什么",
+            "什么样的",
+            "哪些",
+            "哪个",
+            "是不是",
+            "有没有",
+            "能不能",
+            "可不可以",
+            "会不会",
+            "什么时候",
+        )
+    )
 
 
 def _extract_recent_academic_span(
@@ -482,6 +790,13 @@ def _extract_recent_academic_span(
     for marker in sorted(STRONG_QUESTION_MARKERS, key=len, reverse=True):
         marker_start = normalized_text.rfind(marker)
         if marker_start <= 0:
+            continue
+        if marker == "什么" and any(
+            word in normalized_text[max(0, marker_start - 16) : marker_start]
+            for word in ("不管", "无论", "任何", "随便")
+        ):
+            # "不管…发生什么" uses 什么 as an indefinite pronoun, not a
+            # question; the span rescue must not manufacture a candidate.
             continue
         suffix = normalized_text[marker_start + len(marker) :]
         suffix_is_valid = _valid_internal_question_suffix(marker, suffix)
@@ -523,10 +838,15 @@ def _extract_recent_academic_span(
 def _extract_question_text(
     raw_text: str,
     hotwords: tuple[str, ...] = (),
+    *,
+    is_final: bool = False,
+    has_context: bool = False,
 ) -> str:
     """Extract the last complete answerable-looking clause from speech."""
-    text = _strip_classroom_response_tail(
-        _VOCATIVE_PREFIX.sub("", raw_text.strip())
+    text = normalize_spoken_text(
+        _strip_classroom_response_tail(
+            _VOCATIVE_PREFIX.sub("", raw_text.strip())
+        )
     )
     if not text:
         return ""
@@ -541,12 +861,17 @@ def _extract_question_text(
 
     for clause in reversed(clauses):
         normalized = _normalized_clause(clause)
-        if _looks_like_question_clause(clause, normalized, text):
+        if _looks_like_question_clause(
+            clause, normalized, text,
+            is_final=is_final, has_context=has_context,
+        ):
+            normalized = _restore_trailing_particle(clause, normalized)
             normalized = _trim_teacher_answer(normalized)
             return _extract_recent_academic_span(normalized, hotwords)
         span = _extract_recent_academic_span(normalized, hotwords)
         if span != normalized and _looks_like_question_clause(
-            span, span, span
+            span, span, span,
+            is_final=is_final, has_context=has_context,
         ):
             return _trim_teacher_answer(span)
     return ""
@@ -558,7 +883,7 @@ class QuestionDetector:
     def __init__(
         self,
         subject: str,
-        minimum_length: int = 8,
+        minimum_length: int = 7,
         hotwords: tuple[str, ...] = (),
     ) -> None:
         self.subject = subject
@@ -579,11 +904,28 @@ class QuestionDetector:
 
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
         """Return zero or one candidate for a transcript event."""
+        has_context = any(
+            self._is_context_eligible(text) for text in self._recent_context
+        )
         normalized_text = _extract_question_text(
             event.text,
             hotwords=self.hotwords,
+            is_final=event.is_final,
+            has_context=has_context,
         )
         context = self._context_for(event.text, normalized_text)
+        short_question = _is_short_question(
+            normalized_text,
+            has_context=bool(context),
+            minimum_length=self.minimum_length,
+        )
+        particle_question = (
+            len(normalized_text) <= 10
+            and normalized_text.endswith(_FILLER_PARTICLE_TAILS)
+            and _is_particle_question(
+                normalized_text, has_context=bool(context)
+            )
+        )
         segment_id = self._segment_id_for(event)
         signature = (
             normalized_text,
@@ -593,7 +935,9 @@ class QuestionDetector:
             segment_id,
             self._has_question_mark(event.text),
         )
-        confidence = self._score(event, normalized_text)
+        confidence = self._score(
+            event, normalized_text, particle_question=particle_question
+        )
         if signature in self._recent_events:
             if event.is_final and (
                 len(normalized_text) < self.minimum_length
@@ -606,16 +950,18 @@ class QuestionDetector:
             self._remember_context(event.text)
 
         if not normalized_text or not self._is_answerable(
-            event, normalized_text
+            event, normalized_text, short_question=short_question
         ):
             if event.is_final:
                 self._active_questions.pop(segment_id, None)
             return []
 
         too_short = len(normalized_text) < self.minimum_length
-        if (too_short and not self._is_choice_question(normalized_text)) or (
-            confidence < QUESTION_SCORE_THRESHOLD
-        ):
+        if (
+            too_short
+            and not short_question
+            and not self._is_choice_question(normalized_text)
+        ) or confidence < QUESTION_SCORE_THRESHOLD:
             if event.is_final:
                 self._active_questions.pop(segment_id, None)
             return []
@@ -642,10 +988,16 @@ class QuestionDetector:
         return [candidate]
 
     def _is_answerable(
-        self, event: TranscriptEvent, normalized_text: str
+        self,
+        event: TranscriptEvent,
+        normalized_text: str,
+        *,
+        short_question: bool = False,
     ) -> bool:
-        if len(normalized_text) < self.minimum_length and not self._is_choice_question(
-            normalized_text
+        if (
+            len(normalized_text) < self.minimum_length
+            and not short_question
+            and not self._is_choice_question(normalized_text)
         ):
             return False
 
@@ -665,7 +1017,15 @@ class QuestionDetector:
             # In running speech this is often a confirmation followed by more
             # lecture, not a completed yes/no proposition. Recheck the final.
             return False
-        if _MANAGEMENT_RE.search(normalized_text):
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        ):
+            return False
+
+        if normalized_text.endswith(_COMPREHENSION_TAILS):
+            # "这个大家能理解吧" checks the audience, it does not ask a
+            # course question, even with academic words in the clause.
             return False
 
         has_academic_hint = self._has_academic_hint(normalized_text)
@@ -674,6 +1034,7 @@ class QuestionDetector:
             and not has_academic_hint
             and not self._is_choice_question(normalized_text)
             and not self._has_question_mark(event.text)
+            and not _has_question_form_evidence(normalized_text)
         ):
             return False
 
@@ -752,11 +1113,30 @@ class QuestionDetector:
 
     @staticmethod
     def _is_context_eligible(normalized_text: str) -> bool:
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+            or _GREETING_RE.search(normalized_text)
+            or _CONFIRMATION_RE.search(normalized_text)
+        ):
+            return False
+        if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+            return False
+        if not normalized_text.endswith("吗") and any(
+            marker in normalized_text
+            for marker in _DISCOURSE_CONTINUATION_MARKERS
+        ):
+            return False
         if len(normalized_text) < 8:
-            return False
-        if _MANAGEMENT_RE.search(normalized_text):
-            return False
-        return not _CONFIRMATION_RE.search(normalized_text)
+            if len(normalized_text) < 4:
+                return False
+            if _is_particle_question(normalized_text, has_context=True):
+                return True
+            return any(
+                signal in normalized_text
+                for signal in _CONTEXT_QUESTION_SIGNALS
+            )
+        return True
 
     @staticmethod
     def _is_choice_question(normalized_text: str) -> bool:
@@ -791,9 +1171,17 @@ class QuestionDetector:
             self._active_questions.popitem(last=False)
 
     @classmethod
-    def _score(cls, event: TranscriptEvent, normalized_text: str) -> float:
+    def _score(
+        cls,
+        event: TranscriptEvent,
+        normalized_text: str,
+        *,
+        particle_question: bool = False,
+    ) -> float:
         has_strong_marker = cls._has_strong_marker(normalized_text)
-        has_ending_particle = normalized_text.endswith(QUESTION_PARTICLES)
+        has_ending_particle = (
+            normalized_text.endswith(QUESTION_PARTICLES) or particle_question
+        )
         has_question_mark = cls._has_question_mark(event.text)
         if (
             has_strong_marker
@@ -836,6 +1224,8 @@ class QuestionDetector:
             for marker in STRONG_QUESTION_MARKERS
         ):
             return True
+        if _is_alternative_question(normalized_text):
+            return True
 
         for marker in sorted(
             STRONG_QUESTION_MARKERS,
@@ -845,7 +1235,14 @@ class QuestionDetector:
             marker_start = normalized_text.find(marker)
             if marker_start <= 0:
                 continue
+            if marker.startswith("能") and normalized_text[marker_start - 1] == "不":
+                continue
             marker_end = marker_start + len(marker)
+            if marker == "是否" and normalized_text[marker_end : marker_end + 1] in {
+                "认",
+                "定",
+            }:
+                continue
             if marker_end >= len(normalized_text):
                 continue
             prefix = normalized_text[:marker_start]
