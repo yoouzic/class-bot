@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from classbot.domain import QuestionCandidate, TranscriptEvent
+from classbot.spoken_text import normalize_spoken_text
 
 STRONG_QUESTION_MARKERS = (
     "哪些",
@@ -181,6 +182,59 @@ _CONFIRMATION_ONLY = ("对不对", "对吧", "是吧", "答案不就在这里吗
 _CONFIRMATION_RE = re.compile(
     r"(?:对不对|对吧|是吧|答案不就在这里)(?:[\u4e00-\u9fff]{0,6})?$"
 )
+_PARTICLE_TAILS = ("呢", "吗")
+_FOLLOWUP_STARTS = (
+    "那", "那么", "还有", "另外", "换成", "如果",
+    "这个", "它", "他们", "她们",
+)
+_CONTEXT_QUESTION_SIGNALS = (
+    "什么", "哪", "谁", "为什么", "为何", "如何", "怎么",
+    "多少", "多久", "是否", "有没有", "是不是", "能不能",
+    "可不可以", "会不会",
+)
+# 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
+_DISCOURSE_CONTINUATION_PREFIXES = (
+    "因为", "所以", "但是", "可是", "然后", "而且", "不过",
+)
+
+
+def _is_particle_question(
+    normalized_text: str,
+    *,
+    has_context: bool,
+) -> bool:
+    if not normalized_text or not normalized_text.endswith(_PARTICLE_TAILS):
+        return False
+    if normalized_text.endswith("着呢"):
+        return False
+    if _MANAGEMENT_RE.search(normalized_text) or _CONFIRMATION_RE.search(
+        normalized_text
+    ):
+        return False
+    if normalized_text.endswith("吗"):
+        return len(normalized_text) >= 4
+    if has_context:
+        return len(normalized_text) >= 2
+    if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+        return False
+    return len(normalized_text) >= 5 and (
+        "的" in normalized_text
+        or normalized_text.startswith(
+            ("这个", "那个", "它", "他们", "她们")
+        )
+    )
+
+
+def _is_short_question(
+    normalized_text: str,
+    *,
+    has_context: bool,
+) -> bool:
+    if len(normalized_text) >= 7:
+        return False
+    return _is_particle_question(normalized_text, has_context=has_context)
+
+
 _INCOMPLETE_PARTIAL_TAILS = (
     "是如何",
     "是怎么",
@@ -316,23 +370,6 @@ _INCOMPLETE_QUESTION_RE = re.compile(
     r"什么样的(?:情(?:况(?:下+)?)?)?(?:呢|啊|呀|吧)?$|"
     r"(?:是不是|能不能|可不可以)(?:啊|呀|呢|吧|不是你)*$"
 )
-# 口误卡壳折叠：三连及以上的单字（是是是→是）与二连及以上的双字
-# （这个这个→这个）。单字二连保留——"想想/常常/刚刚"是有意义的叠词。
-_REPEATED_CHAR_RE = re.compile(r"([\u4e00-\u9fff])\1{2,}")
-_REPEATED_BIGRAM_RE = re.compile(r"([\u4e00-\u9fff]{2})\1+")
-
-
-def _collapse_disfluency(text: str) -> str:
-    for _ in range(3):
-        collapsed = _REPEATED_BIGRAM_RE.sub(
-            r"\1", _REPEATED_CHAR_RE.sub(r"\1", text)
-        )
-        if collapsed == text:
-            return collapsed
-        text = collapsed
-    return text
-
-
 _ALTERNATIVE_RIGHT_WRONG_RE = re.compile(r"(?:对的|错的|正确|错误)[，,]?还是")
 
 
@@ -446,6 +483,7 @@ def _looks_like_question_clause(
     original_text: str,
     *,
     is_final: bool = False,
+    has_context: bool = False,
 ) -> bool:
     if not normalized_clause:
         return False
@@ -465,10 +503,17 @@ def _looks_like_question_clause(
         if normalized_clause.endswith("着呢"):
             # "放着呢/坐着呢" is a continuative state, not a question 呢.
             return False
-        if normalized_clause.endswith(_TRAILING_QUESTION_PARTICLES) and not any(
-            signal in normalized_clause
-            for signal in _PARTICLE_QUESTION_SIGNALS
-        ) and len(normalized_clause) < 10:
+        if (
+            normalized_clause.endswith(_TRAILING_QUESTION_PARTICLES)
+            and not any(
+                signal in normalized_clause
+                for signal in _PARTICLE_QUESTION_SIGNALS
+            )
+            and len(normalized_clause) < 10
+            and not _is_particle_question(
+                normalized_clause, has_context=has_context
+            )
+        ):
             # A bare "…吗/呢" tail on a short clause is usually a filler or
             # confirmation; a longer one ("…支持中文吗") is a real question.
             return False
@@ -678,9 +723,10 @@ def _extract_question_text(
     hotwords: tuple[str, ...] = (),
     *,
     is_final: bool = False,
+    has_context: bool = False,
 ) -> str:
     """Extract the last complete answerable-looking clause from speech."""
-    text = _collapse_disfluency(
+    text = normalize_spoken_text(
         _strip_classroom_response_tail(
             _VOCATIVE_PREFIX.sub("", raw_text.strip())
         )
@@ -699,13 +745,15 @@ def _extract_question_text(
     for clause in reversed(clauses):
         normalized = _normalized_clause(clause)
         if _looks_like_question_clause(
-            clause, normalized, text, is_final=is_final,
+            clause, normalized, text,
+            is_final=is_final, has_context=has_context,
         ):
             normalized = _trim_teacher_answer(normalized)
             return _extract_recent_academic_span(normalized, hotwords)
         span = _extract_recent_academic_span(normalized, hotwords)
         if span != normalized and _looks_like_question_clause(
-            span, span, span, is_final=is_final,
+            span, span, span,
+            is_final=is_final, has_context=has_context,
         ):
             return _trim_teacher_answer(span)
     return ""
@@ -738,12 +786,19 @@ class QuestionDetector:
 
     def feed(self, event: TranscriptEvent) -> list[QuestionCandidate]:
         """Return zero or one candidate for a transcript event."""
+        has_context = any(
+            self._is_context_eligible(text) for text in self._recent_context
+        )
         normalized_text = _extract_question_text(
             event.text,
             hotwords=self.hotwords,
             is_final=event.is_final,
+            has_context=has_context,
         )
         context = self._context_for(event.text, normalized_text)
+        short_question = _is_short_question(
+            normalized_text, has_context=bool(context)
+        )
         segment_id = self._segment_id_for(event)
         signature = (
             normalized_text,
@@ -766,16 +821,18 @@ class QuestionDetector:
             self._remember_context(event.text)
 
         if not normalized_text or not self._is_answerable(
-            event, normalized_text
+            event, normalized_text, short_question=short_question
         ):
             if event.is_final:
                 self._active_questions.pop(segment_id, None)
             return []
 
         too_short = len(normalized_text) < self.minimum_length
-        if (too_short and not self._is_choice_question(normalized_text)) or (
-            confidence < QUESTION_SCORE_THRESHOLD
-        ):
+        if (
+            too_short
+            and not short_question
+            and not self._is_choice_question(normalized_text)
+        ) or confidence < QUESTION_SCORE_THRESHOLD:
             if event.is_final:
                 self._active_questions.pop(segment_id, None)
             return []
@@ -802,10 +859,16 @@ class QuestionDetector:
         return [candidate]
 
     def _is_answerable(
-        self, event: TranscriptEvent, normalized_text: str
+        self,
+        event: TranscriptEvent,
+        normalized_text: str,
+        *,
+        short_question: bool = False,
     ) -> bool:
-        if len(normalized_text) < self.minimum_length and not self._is_choice_question(
-            normalized_text
+        if (
+            len(normalized_text) < self.minimum_length
+            and not short_question
+            and not self._is_choice_question(normalized_text)
         ):
             return False
 
@@ -919,7 +982,19 @@ class QuestionDetector:
     @staticmethod
     def _is_context_eligible(normalized_text: str) -> bool:
         if len(normalized_text) < 8:
-            return False
+            return (
+                len(normalized_text) >= 4
+                and (
+                    normalized_text.endswith(("吗", "呢", "呀", "啊"))
+                    or any(
+                        signal in normalized_text
+                        for signal in _CONTEXT_QUESTION_SIGNALS
+                    )
+                )
+                and not normalized_text.endswith("着呢")
+                and not _MANAGEMENT_RE.search(normalized_text)
+                and not _CONFIRMATION_RE.search(normalized_text)
+            )
         if _MANAGEMENT_RE.search(normalized_text):
             return False
         return not _CONFIRMATION_RE.search(normalized_text)
