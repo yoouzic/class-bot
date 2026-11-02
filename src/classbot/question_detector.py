@@ -195,6 +195,7 @@ _SHORT_CONTENT_CUES = (
     "风险", "效果", "性能", "版本", "接口", "数据", "模型", "方案", "功能",
     "步骤", "参数", "准确率", "召回率", "指标", "延迟", "内存", "显存",
     "训练", "测试", "实验", "结果", "原因", "原理", "定义", "作用", "流程",
+    "讲",
 )
 _SHORT_MANAGEMENT_RE = re.compile(
     r"(?:能?听(?:见|得到|得见)(?:我)?(?:说话)?|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|"
@@ -207,12 +208,15 @@ _GREETING_RE = re.compile(
 # 含这些词的"呀/啊/吧/来着"句是在陈述，不是在追问。
 _STATEMENT_MARKERS = (
     "就是", "这样", "那样", "很", "太", "挺", "真的", "确实", "已经",
-    "都", "也", "还", "刚才", "只是",
+    "刚才", "只是",
 )
 # 上下文中的短应答/过渡语，不是对上一个问题的追问。
-_SHORT_ACK_RE = re.compile(
-    r"^(?:好的?|好吧|好|行|可以(?:的)?|是的?|对(?:的)?|嗯|哦|这样|就这样|"
-    r"先这样|那好|继续|我们继续)"
+_SHORT_ACK_STEMS = frozenset(
+    {
+        "好", "好的", "好吧", "那好", "行", "可以", "可以的", "是", "是的",
+        "对", "对的", "这样", "就这样", "先这样", "继续", "我们继续",
+        "好的吧", "是这样的",
+    }
 )
 # 短"呢"句前接这些连词时是在续接前文的理由/叙述，不是在追问。
 _DISCOURSE_CONTINUATION_PREFIXES = (
@@ -243,11 +247,6 @@ def _is_particle_question(
         return False
     if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
         return False
-    if any(
-        marker in normalized_text
-        for marker in _DISCOURSE_CONTINUATION_MARKERS
-    ):
-        return False
     stem = normalized_text
     tail = ""
     for candidate in _PARTICLE_TAILS:
@@ -255,8 +254,19 @@ def _is_particle_question(
             tail = candidate
             stem = stem[: -len(candidate)]
             break
+    if tail != "吗" and any(
+        marker in normalized_text
+        for marker in _DISCOURSE_CONTINUATION_MARKERS
+    ):
+        return False
+    if tail in _FILLER_PARTICLE_TAILS and any(
+        marker in normalized_text for marker in _STATEMENT_MARKERS
+    ):
+        # A short "呀/啊/吧/来着" clause containing these words is a statement,
+        # with or without context.
+        return False
     if has_context:
-        if _SHORT_ACK_RE.match(normalized_text):
+        if tail != "吗" and stem in _SHORT_ACK_STEMS:
             return False
         if len(normalized_text) == 2 and normalized_text not in {
             "它呢", "他呢", "她呢",
@@ -266,8 +276,6 @@ def _is_particle_question(
     if len(normalized_text) < 5:
         return False
     if tail in _FILLER_PARTICLE_TAILS:
-        if any(marker in normalized_text for marker in _STATEMENT_MARKERS):
-            return False
         if tail == "来着":
             return any(
                 signal in normalized_text
@@ -602,9 +610,12 @@ def _looks_like_question_clause(
             and (
                 len(particle_text) < 10
                 or _CONFIRMATION_RE.search(particle_text)
-                or any(
-                    marker in particle_text
-                    for marker in _DISCOURSE_CONTINUATION_MARKERS
+                or (
+                    not particle_text.endswith("吗")
+                    and any(
+                        marker in particle_text
+                        for marker in _DISCOURSE_CONTINUATION_MARKERS
+                    )
                 )
             )
             and not _is_particle_question(
@@ -1101,7 +1112,7 @@ class QuestionDetector:
             return False
         if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
             return False
-        if any(
+        if not normalized_text.endswith("吗") and any(
             marker in normalized_text
             for marker in _DISCOURSE_CONTINUATION_MARKERS
         ):
