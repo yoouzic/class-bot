@@ -10,7 +10,7 @@
 - `FunAsrStreamingRecognizer` 接受可选 `refiner`：会话开始后台预加载；精修时已加载则走离线解码，未加载或推理失败则回退原有流式整段重解码，行为与现有 `final_refinement` 开关兼容。
 - 装配在 `main.py._make_recognizer`：`CLASSBOT_ASR_REFINER=seaco`（默认）启用离线精修，`stream` 保留旧行为，`off` 关闭；精修输出经过课程纠错表，且因标点模型而带完整标点。
 - 用户 `.env` 已切换 `CLASSBOT_ASR_DEVICE=cuda`；`.env.example` 记录 cu130 安装命令。
-- 冒烟脚本：`scripts/verify_asr_gpu.py`（流式加载、分块推理、离线加载加预热、整段精修、显存峰值）。
+- 冒烟脚本：`scripts/asr/verify_asr_gpu.py`（流式加载、分块推理、离线加载加预热、整段精修、显存峰值）。
 
 ## 实测（RTX 5070 Laptop GPU，torch 2.14.1+cu130，模型本地缓存命中）
 

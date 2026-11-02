@@ -165,7 +165,7 @@
 
 ### 5.4 检测评测
 
-复用 `scripts/eval_question_detector.py`，新增答辩/日常/卡壳样本集：
+复用 `scripts/eval/eval_question_detector.py`，新增答辩/日常/卡壳样本集：
 
 - 先做 50–80 条可复核样本，覆盖：
   - 日常问法：`支持中文吗`、`部署需要多少内存`、`这个接口怎么调用`；

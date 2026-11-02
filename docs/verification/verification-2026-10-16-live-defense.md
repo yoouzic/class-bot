@@ -26,7 +26,7 @@
 
 ## 验证入口
 
-`scripts/verify_live_defense.py` 使用已选场景的真实完整索引，以及生产入口
+`scripts/defense/verify_live_defense.py` 使用已选场景的真实完整索引，以及生产入口
 `WorkspaceController.prepare_session()` 和 `RuntimeController.start()`。
 它保留原始构造器，并在实际对象的方法旁记录观测事件：
 
@@ -66,7 +66,7 @@ WAV 位于 `tmp/live-defense-20261016/tts/`，均由 Microsoft Huihui Desktop，
 先等完整索引已发布、同一播放端点没有其他验证采集任务，再运行：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/verify_live_defense.py `
+.\.venv\Scripts\python.exe scripts/defense/verify_live_defense.py `
   --questions-json tmp/live-defense-20261016/questions.json `
   --output tmp/live-defense-20261016/run-01 `
   --wav-dir tmp/live-defense-20261016/tts `
@@ -76,7 +76,7 @@ WAV 位于 `tmp/live-defense-20261016/tts/`，均由 Microsoft Huihui Desktop，
 重新生成受控中文输入：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/verify_live_defense.py `
+.\.venv\Scripts\python.exe scripts/defense/verify_live_defense.py `
   --questions-json tmp/live-defense-20261016/questions.json `
   --output tmp/live-defense-20261016/tts `
   --wav-dir tmp/live-defense-20261016/tts --prepare-tts
@@ -143,7 +143,7 @@ run-10 之后的原文单位协议将每个正文/章节字符串无损切成最
 
 ## 已完成的真实音频入口验证
 
-入口 `scripts/verify_audio_ingress.py` 使用未改动的生产 `RuntimeController._audio_loop`、
+入口 `scripts/defense/verify_audio_ingress.py` 使用未改动的生产 `RuntimeController._audio_loop`、
 真实 `LoopbackCapture`、`SpeechSegmenter`、`FunAsrStreamingRecognizer`、
 `DefenseQuestionDetector`。生产 `LivePipeline` 仍消耗实际识别事件并调用检测器；仅在
 验证派生类中关闭回答任务调度，没有云端客户端实例或资料库查询。

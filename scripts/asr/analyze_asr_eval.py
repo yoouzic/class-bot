@@ -1,7 +1,7 @@
 """Summarize an eval_asr_variants run: agreement, wrong-form terms, samples.
 
 Usage:
-    PYTHONPATH=src .venv/Scripts/python.exe scripts/analyze_asr_eval.py \
+    PYTHONPATH=src .venv/Scripts/python.exe scripts/asr/analyze_asr_eval.py \
         --dir tmp/eval-asr-20261101 [--course marxism_basic_principles_2023]
 
 All variants share one segment list, so line i of every transcript belongs to

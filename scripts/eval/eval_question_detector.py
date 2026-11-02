@@ -2,7 +2,7 @@
 
 Usage (project root):
     PYTHONIOENCODING=utf-8 PYTHONPATH=src .venv/Scripts/python.exe \
-        scripts/eval_question_detector.py \
+        scripts/eval/eval_question_detector.py \
         --sample tmp/eval-asr-20261101/clause-sample.json \
         --labels tmp/eval-asr-20261101/clause-labels.json \
         --detector classroom

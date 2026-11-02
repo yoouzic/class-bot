@@ -738,7 +738,7 @@ Expected: PASS。若有旧用例因短 `呢` 放行而失败，只调整本任�
 Run:
 
 ```bash
-PYTHONPATH=src .venv/Scripts/python.exe scripts/eval_question_detector.py \
+PYTHONPATH=src .venv/Scripts/python.exe scripts/eval/eval_question_detector.py \
   --sample tmp/eval-asr-20261101/clause-sample.json \
   --labels tmp/eval-asr-20261101/clause-labels.json
 ```
@@ -3832,7 +3832,7 @@ git diff --check
 - Modify: `.env.example`
 - Modify: `README.md`
 - Modify: `CONTEXT.md`
-- Modify: `scripts/eval_question_detector.py`
+- Modify: `scripts/eval/eval_question_detector.py`
 
 **Interfaces:**
 - Consumes: all previous tasks.
@@ -3882,7 +3882,7 @@ Replace the last two bullets about detection/network with:
 
 - [ ] **Step 4: 扩展评测脚本**
 
-In `scripts/eval_question_detector.py`:
+In `scripts/eval/eval_question_detector.py`:
 
 1. Update the module docstring/usage to mention both detectors and that defense labels are classroom-annotated reference only:
 
@@ -3891,7 +3891,7 @@ In `scripts/eval_question_detector.py`:
 
 Usage (project root):
     PYTHONIOENCODING=utf-8 PYTHONPATH=src .venv/Scripts/python.exe \
-        scripts/eval_question_detector.py \
+        scripts/eval/eval_question_detector.py \
         --sample tmp/eval-asr-20261101/clause-sample.json \
         --labels tmp/eval-asr-20261101/clause-labels.json \
         --detector classroom
@@ -3951,7 +3951,7 @@ For defense, keep the existing `TranscriptEvent` construction; `segment_id=index
 - [ ] **Step 5: 运行评测脚本（课堂）**
 
 ```bash
-PYTHONPATH=src .venv/Scripts/python.exe scripts/eval_question_detector.py \
+PYTHONPATH=src .venv/Scripts/python.exe scripts/eval/eval_question_detector.py \
   --sample tmp/eval-asr-20261101/clause-sample.json \
   --labels tmp/eval-asr-20261101/clause-labels.json
 ```

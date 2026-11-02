@@ -1,7 +1,7 @@
 """Compare ASR variants on a real classroom recording.
 
 Usage (project root):
-    PYTHONPATH=src .venv/Scripts/python.exe scripts/eval_asr_variants.py \
+    PYTHONPATH=src .venv/Scripts/python.exe scripts/asr/eval_asr_variants.py \
         --audio "9月16日 马克思主义哲学与辩证法课程讨论.m4a" \
         --course marxism_basic_principles_2023 \
         --out tmp/eval-asr-20261101 [--device cuda] [--max-seconds 180]
