@@ -245,7 +245,7 @@ Expected: 只出现本任务的两个文件；无空白错误。**不要提交�
 - Consumes: `normalize_spoken_text` from Task 1.
 - Produces: `QuestionDetector.feed()` 对短问句、上下文追问和卡壳文本的识别结果；`QuestionCandidate.context` 带上文。
 
-- [ ] **Step 1: 写课堂回归用例（86 条）**
+- [ ] **Step 1: 写课堂回归用例（99 条）**
 
 Create `tests/test_classroom_conversation_cases.py`:
 
@@ -307,6 +307,8 @@ STANDALONE_CASES = [
     ("这是一道很典型的题啊", False),
     ("这个方案就是这样啊", False),
     ("这个方案就是这样吧", False),
+    ("我们讲完了呢", False),
+    ("这个方案大家听明白了吗", False),
     ("我刚才用过来着", False),
     ("我刚才做过这个来着", False),
     ("他刚才要做实验来着", False),
@@ -338,6 +340,17 @@ CONTEXT_CASES = [
     ("支持离线使用吗", "可以的呀", False),
     ("支持离线使用吗", "好的呢", False),
     ("支持离线使用吗", "是这样的呢", False),
+    ("支持离线使用吗", "好了吧", False),
+    ("支持离线使用吗", "行了吧", False),
+    ("支持离线使用吗", "可以了吧", False),
+    ("支持离线使用吗", "对了吧", False),
+    ("支持离线使用吗", "是了吧", False),
+    ("支持离线使用吗", "好了呢", False),
+    ("支持离线使用吗", "行了呢", False),
+    ("支持离线使用吗", "可以了呢", False),
+    ("支持离线使用吗", "对了呢", False),
+    ("支持离线使用吗", "是这样呢", False),
+    ("支持离线使用吗", "是那样呢", False),
     ("能离线吗", "这个呢", True),
     ("召回率呀", "这个呢", True),
     ("支持离线使用吗", "可以支持离线吗", True),
@@ -442,7 +455,8 @@ _SHORT_ACK_STEMS = frozenset(
     {
         "好", "好的", "好吧", "那好", "行", "可以", "可以的", "是", "是的",
         "对", "对的", "这样", "就这样", "先这样", "继续", "我们继续",
-        "好的吧", "是这样的",
+        "好的吧", "是这样的", "好了", "行了", "可以了", "对了", "是了",
+        "是这样", "是那样",
     }
 )
 _DISCOURSE_CONTINUATION_PREFIXES = (
@@ -515,7 +529,11 @@ def _is_particle_question(
         return True
     if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
         return True
-    return any(cue in stem for cue in _SHORT_CONTENT_CUES)
+    if tail == "吗":
+        return any(cue in stem for cue in _SHORT_CONTENT_CUES)
+    return any(
+        cue in stem for cue in _SHORT_CONTENT_CUES if len(cue) >= 2
+    )
 
 
 def _is_short_question(
@@ -653,7 +671,14 @@ Change the signature and first check:
             and not self._is_choice_question(normalized_text)
         ):
             return False
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        ):
+            return False
 ```
+
+并把后面原有的 `if _MANAGEMENT_RE.search(normalized_text): return False` 合并为上面的组合判断，不要保留两份。
 
 - [ ] **Step 9: 让短问句进入上下文**
 
@@ -696,7 +721,7 @@ Run:
 .venv/Scripts/python.exe -m pytest tests/test_classroom_conversation_cases.py -q
 ```
 
-Expected: PASS（86 passed + 1 context assertion）。
+Expected: PASS（99 passed + 1 context assertion）。
 
 - [ ] **Step 11: 运行现有检测器测试**
 
