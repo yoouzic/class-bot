@@ -3847,8 +3847,10 @@ In `.env.example`, replace the web-search block with:
 # Internal source tags are [S#]/[W#]/[G]; the UI shows 教/PPT/代码文件名/文/PDF/网/通识.
 # Code sources show the file name inline and the absolute path in the source panel.
 CLASSBOT_WEB_SEARCH=on
-# Fetch depth: auto = fetch 1-2 pages only when snippets are thin; off = snippets only;
-# always = fetch 1-2 pages for every web query.
+# Fetch depth: auto = fetch 1-2 pages when snippets are thin (total <240 or a single
+# snippet <80) OR the query has detail signals (version/price/parameter/steps/code/compare);
+# off = snippets only; always = fetch 1-2 pages for every web query. Without a DeepSeek
+# API key only Bing/DDG snippets are used and Fetch is never called.
 CLASSBOT_WEB_FETCH=auto
 CLASSBOT_WEB_SEARCH_TIMEOUT=1.8
 CLASSBOT_WEB_FETCH_TIMEOUT=1.0
@@ -3859,11 +3861,14 @@ CLASSBOT_WEB_FETCH_TIMEOUT=1.0
 Update the web-search and answer-source paragraphs:
 
 - 课堂与答辩都支持本地材料+网络检索；
+- 课堂本地覆盖不足，或问题含时效/外部信息信号（最新/今年/现在/版本/哪一年/谁/多少人等）时联网；答辩仅在本地核验为 partial/insufficient 时补充一般背景；
 - 正文只显示中文短标签：`（教）`、`（PPT）`、`（xxx.py）`、`（文）`、`（PDF）`、`（网）`、`（通识）`；
 - 代码来源正文只显示文件名，来源区显示绝对路径和行号；
+- 来源区颜色：绿色=已引用本地资料，橙色=已引用网络，灰色=通识/待核/未引用候选；
+- 外发范围：问题发给 DeepSeek Chat（联网时同时发给 Search/Fetch）；本地/网络候选发给 DeepSeek Chat；
 - 答辩项目事实仍只由本地资料证明，网络只补充一般背景；
-- 新增 `CLASSBOT_WEB_FETCH` 和两个超时配置；
-- 关闭 `CLASSBOT_WEB_SEARCH` 恢复纯本地行为。
+- `CLASSBOT_WEB_FETCH=auto`：摘要过薄（总长 <240 或单条 <80）或问题含版本/价格/参数/步骤/代码/对比等细节信号时抓 1–2 页；无 DeepSeek key 时只用 Bing/DDG 摘要，不调用 Fetch；
+- 新增两个超时配置；关闭 `CLASSBOT_WEB_SEARCH` 恢复纯本地行为。
 
 - [ ] **Step 3: 更新 CONTEXT.md**
 
@@ -3871,7 +3876,7 @@ Replace the last two bullets about detection/network with:
 
 ```markdown
 - 问题识别同时覆盖课堂设问、日常对话式询问和答辩追问；问题抽取前先折叠口误卡壳（重复单字/短语、句首填充词、明确自我纠正），短问句和上下文追问使用本地规则放行，不新增逐句模型调用。
-- 课堂本地教材覆盖不足或问题含时效信号时，使用本地材料+网络检索混合回答；答辩仅在本地核验为 partial/insufficient 时补充网络一般背景。正文来源编号由代码映射为中文短标签（教/PPT/代码文件名/文/PDF/网/通识），代码绝对路径只在本机 UI 来源区显示。
+- 课堂本地教材覆盖不足或问题含时效/外部信息信号时，使用本地材料+网络检索混合回答；答辩仅在本地核验为 partial/insufficient 时补充网络一般背景。正文来源编号由代码映射为中文短标签（教/PPT/代码文件名/文/PDF/网/通识），代码绝对路径只在本机 UI 来源区显示。
 - 答辩项目事实、实验数据、实现状态仍只由本地资料证明；网络补充不进入 [S#] 证据体系，不得冒充项目事实。
 ```
 
@@ -3879,13 +3884,38 @@ Replace the last two bullets about detection/network with:
 
 In `scripts/eval_question_detector.py`:
 
-1. Add import:
+1. Update the module docstring/usage to mention both detectors and that defense labels are classroom-annotated reference only:
+
+```python
+"""Measure classroom or defense question detection against annotated clauses.
+
+Usage (project root):
+    PYTHONIOENCODING=utf-8 PYTHONPATH=src .venv/Scripts/python.exe \
+        scripts/eval_question_detector.py \
+        --sample tmp/eval-asr-20261101/clause-sample.json \
+        --labels tmp/eval-asr-20261101/clause-labels.json \
+        --detector classroom
+"""
+```
+
+2. At the start of `main()`, make Windows console output UTF-8 safe and print the detector:
+
+```python
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+```
+
+After parsing arguments, print:
+
+```python
+    print(f"detector: {args.detector}")
+```
+
+3. Add the import and argument:
 
 ```python
 from classbot.defense_detector import DefenseQuestionDetector
 ```
-
-2. Add argument:
 
 ```python
     parser.add_argument(
@@ -3893,18 +3923,30 @@ from classbot.defense_detector import DefenseQuestionDetector
     )
 ```
 
-3. Replace detector construction:
+4. Load the course profile only for the classroom detector:
+
+```python
+    if args.detector == "classroom":
+        profile = load_course_profile(args.course)
+    else:
+        profile = None
+```
+
+5. Replace detector construction:
 
 ```python
         if args.detector == "defense":
             detector = DefenseQuestionDetector("答辩")
         else:
             detector = QuestionDetector(
-                "马克思主义基本原理", hotwords=profile.hotwords,
+                "马克思主义基本原理",
+                hotwords=profile.hotwords if profile else (),
             )
 ```
 
 For defense, keep the existing `TranscriptEvent` construction; `segment_id=index` gives each item a fresh context segment. The defense detector's context is bounded to 4 prior finals; this is enough for the eval.
+
+6. When writing the Task 11 report, correct the defense-F1 explanation: 0.763 is reference-only because the labels are classroom-annotated; do not claim every FN is label noise. Remove the incorrect “defense has no management filter” and “26 cases” statements (the detector has `_MANAGEMENT`, and the test file has 30 cases). List the observed lexical gaps (`谁/是不是/怎样/哪几个/在哪/会不会`) as a follow-up.
 
 - [ ] **Step 5: 运行评测脚本（课堂）**
 
