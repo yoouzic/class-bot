@@ -10,10 +10,12 @@ tuple so callers degrade to their existing behavior.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -21,6 +23,13 @@ import httpx
 _LOGGER = logging.getLogger(__name__)
 
 _DEEPSEEK_SEARCH_PATH = "/v1/tools/search"
+_DEEPSEEK_FETCH_PATH = "/v1/tools/fetch"
+_URL_LIMIT = 8192
+_FETCH_CONTENT_LIMIT = 4000
+_DETAIL_MARKERS = (
+    "多少", "几个", "版本", "年份", "价格", "最新",
+    "参数", "配置", "步骤", "代码", "对比",
+)
 # The Search API caps the query at 128 Unicode characters.
 _QUERY_LIMIT = 128
 _BING_URL = "https://www.bing.com/search"
@@ -49,6 +58,8 @@ class WebResult:
     title: str
     url: str
     snippet: str
+    content: str = ""
+    fetched: bool = False
 
 
 def _clean(fragment: str) -> str:
@@ -139,12 +150,79 @@ async def _search_deepseek(
             snippet=_clean(
                 str(item.get("snippet") or item.get("summary") or "")
             ),
+            content=_clean(str(item.get("content") or "")),
         )
         if result.title and result.url.startswith("http") and result.snippet:
             results.append(result)
         if len(results) >= limit:
             break
     return tuple(results)
+
+
+async def fetch_web(
+    url: str,
+    http_client: httpx.AsyncClient,
+    *,
+    api_key: str | None,
+    timeout: float = 1.0,
+) -> WebResult | None:
+    parsed = urlparse(url)
+    if (
+        not api_key
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or len(url) > _URL_LIMIT
+    ):
+        return None
+    try:
+        response = await http_client.post(
+            _DEEPSEEK_FETCH_PATH,
+            json={"url": url},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError, OSError) as error:
+        _LOGGER.debug("deepseek fetch failed: %s", error)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    title = _clean(str(payload.get("title") or ""))
+    content = str(payload.get("content") or "")
+    if not content.strip():
+        return None
+    return WebResult(
+        title=title or url,
+        url=url,
+        snippet="",
+        content=content[:_FETCH_CONTENT_LIMIT],
+        fetched=True,
+    )
+
+
+def _needs_fetch(results: tuple[WebResult, ...], query: str) -> bool:
+    snippets = [result.snippet for result in results if result.snippet]
+    if not snippets:
+        return True
+    if sum(len(snippet) for snippet in snippets) < 240:
+        return True
+    if max(len(snippet) for snippet in snippets) < 80:
+        return True
+    return any(marker in query for marker in _DETAIL_MARKERS)
+
+
+def fetch_mode_from_env() -> str:
+    value = os.getenv("CLASSBOT_WEB_FETCH", "auto").strip().lower()
+    return value if value in {"auto", "off", "always"} else "auto"
+
+
+def timeout_from_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 async def search_web(
@@ -190,3 +268,65 @@ async def search_web(
             return results
         _LOGGER.debug("web search provider %s returned no parseable results", provider)
     return ()
+
+
+async def research_web(
+    query: str,
+    http_client: httpx.AsyncClient,
+    *,
+    api_key: str | None = None,
+    limit: int = 4,
+    search_timeout: float = 1.8,
+    fetch_timeout: float = 1.0,
+    fetch_mode: str = "auto",
+) -> tuple[WebResult, ...]:
+    results = await search_web(
+        query,
+        http_client,
+        api_key=api_key,
+        limit=limit,
+        timeout=search_timeout,
+    )
+    mode = fetch_mode if fetch_mode in {"auto", "off", "always"} else "auto"
+    if not results or not api_key or mode == "off":
+        return results
+    if mode != "always" and not _needs_fetch(results, query):
+        return results
+    candidates = [
+        result for result in results
+        if result.url.startswith(("http://", "https://"))
+    ][:2]
+    if not candidates:
+        return results
+    tasks = [
+        asyncio.create_task(
+            fetch_web(
+                result.url,
+                http_client,
+                api_key=api_key,
+                timeout=fetch_timeout,
+            )
+        )
+        for result in candidates
+    ]
+    done, pending = await asyncio.wait(tasks, timeout=fetch_timeout)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    fetched: dict[str, WebResult] = {}
+    for task, candidate in zip(tasks, candidates):
+        if task not in done:
+            continue
+        try:
+            page = task.result()
+        except Exception:
+            page = None
+        if page is not None:
+            fetched[candidate.url] = page
+    return tuple(
+        replace(result, content=page.content, fetched=True)
+        if (page := fetched.get(result.url)) is not None
+        else result
+        for result in results
+    )

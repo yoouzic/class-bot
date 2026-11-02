@@ -147,3 +147,157 @@ async def test_blank_query_skips_the_network():
         results = await search_web("   ", client, api_key="test-key")
 
     assert results == ()
+
+
+from classbot.llm import web_search as web_module
+from classbot.llm.web_search import fetch_web, research_web
+
+_FETCH_BODY = {
+    "title": "页面标题",
+    "url": "https://example.com/page",
+    "content": "# 标题\n正文内容",
+}
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_returns_markdown_content():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/tools/fetch"
+        assert json.loads(request.content) == {"url": "https://example.com/page"}
+        assert request.headers["authorization"] == "Bearer test-key"
+        return httpx.Response(200, json=_FETCH_BODY)
+
+    async with _client(handler, base_url="https://api.deepseek.example") as client:
+        result = await fetch_web(
+            "https://example.com/page", client, api_key="test-key"
+        )
+
+    assert result is not None
+    assert result.content.startswith("# 标题")
+    assert result.fetched is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_web_rejects_non_http_url():
+    async with _client(
+        lambda request: pytest.fail("network must not be called")
+    ) as client:
+        assert await fetch_web("file:///etc/passwd", client, api_key="k") is None
+
+
+@pytest.mark.asyncio
+async def test_research_web_fetches_short_snippets():
+    fetched = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tools/search":
+            return httpx.Response(
+                200,
+                json={"results": [{
+                    "title": "结果",
+                    "url": "https://example.com/page",
+                    "snippet": "短",
+                }]},
+            )
+        assert request.url.path == "/v1/tools/fetch"
+        fetched.append(request)
+        return httpx.Response(200, json=_FETCH_BODY)
+
+    async with _client(handler, base_url="https://api.deepseek.example") as client:
+        results = await research_web(
+            "细节问题", client, api_key="test-key", fetch_mode="auto"
+        )
+
+    assert fetched
+    assert results[0].content.startswith("# 标题")
+    assert results[0].fetched is True
+
+
+@pytest.mark.asyncio
+async def test_research_web_skips_fetch_for_rich_snippets():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tools/fetch":
+            pytest.fail("rich snippets should not trigger fetch")
+        return httpx.Response(
+            200,
+            json={"results": [
+                {"title": "一", "url": "https://example.com/1", "snippet": "长" * 200},
+                {"title": "二", "url": "https://example.com/2", "snippet": "长" * 200},
+            ]},
+        )
+
+    async with _client(handler, base_url="https://api.deepseek.example") as client:
+        results = await research_web(
+            "普通问题", client, api_key="test-key", fetch_mode="auto"
+        )
+
+    assert len(results) == 2
+    assert all(not result.fetched for result in results)
+
+
+@pytest.mark.asyncio
+async def test_research_web_fetch_mode_off_skips_fetch():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tools/fetch":
+            pytest.fail("fetch mode off must not fetch")
+        return httpx.Response(
+            200,
+            json={"results": [{
+                "title": "结果", "url": "https://example.com/page",
+                "snippet": "短",
+            }]},
+        )
+
+    async with _client(handler, base_url="https://api.deepseek.example") as client:
+        results = await research_web(
+            "问题", client, api_key="test-key", fetch_mode="off"
+        )
+
+    assert results and not results[0].fetched
+
+
+@pytest.mark.asyncio
+async def test_research_web_fetch_failure_keeps_snippets():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tools/search":
+            return httpx.Response(
+                200,
+                json={"results": [{
+                    "title": "结果", "url": "https://example.com/page",
+                    "snippet": "短",
+                }]},
+            )
+        return httpx.Response(500)
+
+    async with _client(handler, base_url="https://api.deepseek.example") as client:
+        results = await research_web(
+            "细节问题", client, api_key="test-key", fetch_mode="always"
+        )
+
+    assert results[0].snippet == "短"
+    assert results[0].fetched is False
+
+
+@pytest.mark.asyncio
+async def test_research_web_fetch_timeout_keeps_results(monkeypatch):
+    async def slow_fetch(*args, **kwargs):
+        import asyncio
+        await asyncio.sleep(1)
+        return None
+
+    async def fake_search(*args, **kwargs):
+        return (web_module.WebResult("结果", "https://example.com", "短"),)
+
+    monkeypatch.setattr(web_module, "fetch_web", slow_fetch)
+    monkeypatch.setattr(web_module, "search_web", fake_search)
+
+    async with _client(
+        lambda request: pytest.fail("network must not be called")
+    ) as client:
+        results = await research_web(
+            "细节问题", client, api_key="test-key",
+            fetch_mode="always", fetch_timeout=0.01,
+        )
+
+    assert results[0].url == "https://example.com"
+    assert results[0].fetched is False
