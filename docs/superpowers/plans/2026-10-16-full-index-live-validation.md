@@ -47,6 +47,6 @@
 - `tmp/embedding-device-probe-v2.json`（首版 V1 探测保留，但不能用作全文覆盖证明）
 - `tmp/live-defense-groundtruth.json`
 - `tmp/live-defense-20261016/`
-- `docs/verification-2026-10-16-live-defense.md`
+- `docs/verification/verification-2026-10-16-live-defense.md`
 
 计算和系统回放验证不能以伪造向量、直接注入转写、只检查引用编号或部分索引代替。

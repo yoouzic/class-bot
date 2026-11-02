@@ -15,11 +15,11 @@
 **Files:**
 - Modify: `src/classbot/domain.py`
 - Modify: `src/classbot/pipeline.py`
-- Test: `tests/test_domain.py`
-- Test: `tests/test_pipeline.py`
+- Test: `tests/core/test_domain.py`
+- Test: `tests/pipeline/test_pipeline.py`
 
 - [x] **Step 1: Write failing tests** for non-negative `AnswerCard.timestamp_ms` and a pipeline-created card carrying a session-relative timestamp.
-- [x] **Step 2: Run the focused tests** with `python -m pytest -q tests/test_domain.py tests/test_pipeline.py`; confirm the new timestamp assertions fail because the field is absent.
+- [x] **Step 2: Run the focused tests** with `python -m pytest -q tests/core/test_domain.py tests/pipeline/test_pipeline.py`; confirm the new timestamp assertions fail because the field is absent.
 - [x] **Step 3: Add `timestamp_ms: int = 0` to `AnswerCard`, validate it is non-negative, start a monotonic session clock in `LivePipeline._run_owner`, and set the timestamp only when a new question card is created.
 - [x] **Step 4: Run the focused tests** and confirm they pass while revision events retain the original timestamp.
 
@@ -27,7 +27,7 @@
 
 **Files:**
 - Modify: `src/classbot/question_detector.py`
-- Test: `tests/test_question_detector.py`
+- Test: `tests/detection/test_question_detector.py`
 
 - [x] **Step 1: Write failing tests** for removing explicit prefixes such as `各位同学，` and suppressing long lecture-scaffolding text such as `现在打开教材看一下什么是运动什么是静止`, while preserving `我们来看看，哲学的基本问题是什么？`.
 - [x] **Step 2: Run the focused detector tests** and confirm they fail with the current normalized text and marker-only scoring.
@@ -38,7 +38,7 @@
 
 **Files:**
 - Modify: `src/classbot/ui/main_window.py`
-- Test: `tests/test_main_window.py`
+- Test: `tests/ui/test_main_window.py`
 
 - [x] **Step 1: Write failing UI tests** for the initial current-question placeholder, timestamp rendering such as `[00:01:05]`, and updating the current label only when a new card or the current card changes.
 - [x] **Step 2: Run the focused UI tests** and confirm they fail because the label and timestamp are not rendered.

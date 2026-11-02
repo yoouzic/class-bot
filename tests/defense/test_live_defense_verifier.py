@@ -9,7 +9,7 @@ import pytest
 
 
 def harness():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "verify_live_defense.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "defense" / "verify_live_defense.py"
     assert path.is_file(), "the reusable native verification harness is missing"
     spec = importlib.util.spec_from_file_location("live_defense_verifier", path)
     module = importlib.util.module_from_spec(spec)

@@ -1,7 +1,7 @@
 """Verify the ASR runtime: streaming model and offline refiner both load and infer.
 
 Usage (project root):
-    PYTHONPATH=src .venv/Scripts/python.exe scripts/verify_asr_gpu.py --device cuda
+    PYTHONPATH=src .venv/Scripts/python.exe scripts/asr/verify_asr_gpu.py --device cuda
 
 The offline refinement model downloads once on first use (about 1.4 GB through
 ModelScope). Synthetic audio produces meaningless text on purpose: this script

@@ -156,7 +156,7 @@ def test_real_local_tokenizer_preserves_every_token_in_explicit_windows(tmp_path
     try:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             DEFAULT_MODEL, revision=DEFAULT_MODEL_REVISION,
-            cache_dir=str(Path(__file__).resolve().parents[1] / ".cache/classbot/models"),
+            cache_dir=str(Path(__file__).resolve().parents[2] / ".cache/classbot/models"),
             trust_remote_code=False, local_files_only=True,
         )
     except OSError:

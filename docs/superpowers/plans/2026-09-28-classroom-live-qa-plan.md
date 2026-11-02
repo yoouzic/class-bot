@@ -30,12 +30,12 @@
 - Create: `src/classbot/pipeline.py` — ASR 事件到问题卡片和答案流的协调器。
 - Create: `src/classbot/ui/main_window.py` — 置顶悬浮窗和问题卡片控件。
 - Create: `src/classbot/main.py` — 依赖组装、qasync 事件循环和进程入口。
-- Create: `tests/test_question_detector.py` — 问题识别和修订测试。
-- Create: `tests/test_deepseek_client.py` — fake SSE、请求载荷和错误测试。
-- Create: `tests/test_segmenter.py` — VAD 片段边界测试。
-- Create: `tests/test_funasr_streaming.py` — mock FunASR 模型和事件测试。
-- Create: `tests/test_pipeline.py` — fake ASR/LLM 的端到端协调测试。
-- Create: `tests/test_config.py` — 设置解析测试。
+- Create: `tests/detection/test_question_detector.py` — 问题识别和修订测试。
+- Create: `tests/llm/test_deepseek_client.py` — fake SSE、请求载荷和错误测试。
+- Create: `tests/audio/test_segmenter.py` — VAD 片段边界测试。
+- Create: `tests/asr/test_funasr_streaming.py` — mock FunASR 模型和事件测试。
+- Create: `tests/pipeline/test_pipeline.py` — fake ASR/LLM 的端到端协调测试。
+- Create: `tests/core/test_config.py` — 设置解析测试。
 
 本计划保持一个可独立验收的 MVP；说话人识别、教材检索、移动端和语音播报不进入本轮。
 
@@ -48,12 +48,12 @@
 - Create: `src/classbot/__init__.py`
 - Create: `src/classbot/config.py`
 - Create: `src/classbot/domain.py`
-- Test: `tests/test_config.py`
+- Test: `tests/core/test_config.py`
 
 - [ ] **Step 1: 写设置解析的失败测试**
 
 ```python
-# tests/test_config.py
+# tests/core/test_config.py
 from classbot.config import Settings
 
 
@@ -86,7 +86,7 @@ Run:
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\pytest.exe tests/test_config.py -q
+.\.venv\Scripts\pytest.exe tests/core/test_config.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'classbot'` or `No module named 'classbot.config'` because the package files are not implemented yet.
@@ -249,7 +249,7 @@ __version__ = "0.1.0"
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_config.py -q
+.\.venv\Scripts\pytest.exe tests/core/test_config.py -q
 ```
 
 Expected: `2 passed`.
@@ -257,7 +257,7 @@ Expected: `2 passed`.
 - [ ] **Step 5: 提交工程骨架**
 
 ```powershell
-git add pyproject.toml .gitignore .env.example src tests/test_config.py
+git add pyproject.toml .gitignore .env.example src tests/core/test_config.py
 git commit -m "chore: bootstrap classbot python project"
 ```
 
@@ -265,12 +265,12 @@ git commit -m "chore: bootstrap classbot python project"
 
 **Files:**
 - Create: `src/classbot/question_detector.py`
-- Test: `tests/test_question_detector.py`
+- Test: `tests/detection/test_question_detector.py`
 
 - [ ] **Step 1: 写失败测试，覆盖普通陈述、partial 提问、final 修订和重复事件**
 
 ```python
-# tests/test_question_detector.py
+# tests/detection/test_question_detector.py
 from classbot.domain import TranscriptEvent
 from classbot.question_detector import QuestionDetector
 
@@ -322,7 +322,7 @@ def test_identical_final_event_is_not_submitted_twice():
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_question_detector.py -q
+.\.venv\Scripts\pytest.exe tests/detection/test_question_detector.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'classbot.question_detector'`.
@@ -417,7 +417,7 @@ class QuestionDetector:
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_question_detector.py -q
+.\.venv\Scripts\pytest.exe tests/detection/test_question_detector.py -q
 ```
 
 Expected: `4 passed`.
@@ -425,7 +425,7 @@ Expected: `4 passed`.
 - [ ] **Step 5: 提交问题检测器**
 
 ```powershell
-git add src/classbot/question_detector.py tests/test_question_detector.py
+git add src/classbot/question_detector.py tests/detection/test_question_detector.py
 git commit -m "feat: detect and deduplicate classroom questions"
 ```
 
@@ -434,12 +434,12 @@ git commit -m "feat: detect and deduplicate classroom questions"
 **Files:**
 - Create: `src/classbot/llm/__init__.py`
 - Create: `src/classbot/llm/deepseek_client.py`
-- Test: `tests/test_deepseek_client.py`
+- Test: `tests/llm/test_deepseek_client.py`
 
 - [ ] **Step 1: 写 fake SSE 测试，先锁定请求和增量输出契约**
 
 ```python
-# tests/test_deepseek_client.py
+# tests/llm/test_deepseek_client.py
 import json
 
 import httpx
@@ -513,7 +513,7 @@ async def test_missing_api_key_fails_before_network_call():
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_deepseek_client.py -q
+.\.venv\Scripts\pytest.exe tests/llm/test_deepseek_client.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'classbot.llm'`.
@@ -613,7 +613,7 @@ __all__ = ["DeepSeekClient"]
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_deepseek_client.py -q
+.\.venv\Scripts\pytest.exe tests/llm/test_deepseek_client.py -q
 ```
 
 Expected: `2 passed`.
@@ -621,7 +621,7 @@ Expected: `2 passed`.
 - [ ] **Step 5: 提交流式客户端**
 
 ```powershell
-git add src/classbot/llm tests/test_deepseek_client.py
+git add src/classbot/llm tests/llm/test_deepseek_client.py
 git commit -m "feat: add streaming deepseek answer client"
 ```
 
@@ -634,13 +634,13 @@ git commit -m "feat: add streaming deepseek answer client"
 - Create: `src/classbot/asr/__init__.py`
 - Create: `src/classbot/asr/protocol.py`
 - Create: `src/classbot/asr/funasr_streaming.py`
-- Test: `tests/test_segmenter.py`
-- Test: `tests/test_funasr_streaming.py`
+- Test: `tests/audio/test_segmenter.py`
+- Test: `tests/asr/test_funasr_streaming.py`
 
 - [ ] **Step 1: 写不依赖真实麦克风的 VAD 测试**
 
 ```python
-# tests/test_segmenter.py
+# tests/audio/test_segmenter.py
 from classbot.audio.segmenter import SpeechSegmenter
 
 
@@ -662,7 +662,7 @@ def test_speech_segmenter_reports_end_after_silence(monkeypatch):
 - [ ] **Step 2: 写 mock FunASR 测试，锁定 partial/final 事件**
 
 ```python
-# tests/test_funasr_streaming.py
+# tests/asr/test_funasr_streaming.py
 import asyncio
 
 from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
@@ -704,7 +704,7 @@ async def test_funasr_adapter_emits_partial_and_final(monkeypatch):
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_segmenter.py tests/test_funasr_streaming.py -q
+.\.venv\Scripts\pytest.exe tests/audio/test_segmenter.py tests/asr/test_funasr_streaming.py -q
 ```
 
 Expected: FAIL with missing module errors.
@@ -980,7 +980,7 @@ FunASR 产生的每个 `TranscriptEvent` 都必须携带当前递增的 `segment
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_segmenter.py tests/test_funasr_streaming.py -q
+.\.venv\Scripts\pytest.exe tests/audio/test_segmenter.py tests/asr/test_funasr_streaming.py -q
 ```
 
 Expected: `2 passed`. The test must not download a model or access a microphone; it replaces `build_model` with `FakeModel`.
@@ -988,7 +988,7 @@ Expected: `2 passed`. The test must not download a model or access a microphone;
 - [ ] **Step 7: 提交音频和 ASR 层**
 
 ```powershell
-git add src/classbot/audio src/classbot/asr tests/test_segmenter.py tests/test_funasr_streaming.py
+git add src/classbot/audio src/classbot/asr tests/audio/test_segmenter.py tests/asr/test_funasr_streaming.py
 git commit -m "feat: add local streaming audio recognition layer"
 ```
 
@@ -996,12 +996,12 @@ git commit -m "feat: add local streaming audio recognition layer"
 
 **Files:**
 - Create: `src/classbot/pipeline.py`
-- Test: `tests/test_pipeline.py`
+- Test: `tests/pipeline/test_pipeline.py`
 
 - [ ] **Step 1: 写 fake ASR/LLM 协调测试**
 
 ```python
-# tests/test_pipeline.py
+# tests/pipeline/test_pipeline.py
 import asyncio
 
 from classbot.domain import QuestionCandidate, TranscriptEvent, CardStatus
@@ -1083,7 +1083,7 @@ async def test_pipeline_creates_card_and_accumulates_streaming_answer():
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_pipeline.py -q
+.\.venv\Scripts\pytest.exe tests/pipeline/test_pipeline.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'classbot.pipeline'`.
@@ -1217,7 +1217,7 @@ class LivePipeline:
 Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_pipeline.py -q
+.\.venv\Scripts\pytest.exe tests/pipeline/test_pipeline.py -q
 ```
 
 Expected: `1 passed`.
@@ -1227,8 +1227,8 @@ Expected: `1 passed`.
 Add a second fake-client test where the first candidate yields one delayed chunk, then a candidate with the same `question_id` and expanded text arrives. Assert the first task is cancelled, only the expanded text is sent to the client, and the card has one final answer. Run:
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_pipeline.py -q
-git add src/classbot/pipeline.py tests/test_pipeline.py
+.\.venv\Scripts\pytest.exe tests/pipeline/test_pipeline.py -q
+git add src/classbot/pipeline.py tests/pipeline/test_pipeline.py
 git commit -m "feat: coordinate question cards and streaming answers"
 ```
 

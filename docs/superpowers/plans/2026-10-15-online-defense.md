@@ -16,7 +16,7 @@ NumPy, python-docx, pypdf, python-pptx, existing DeepSeek/httpx SSE.
 
 ## File ownership and contracts
 
-- Audio: `audio/loopback.py`, `tests/test_loopback.py`.
+- Audio: `audio/loopback.py`, `tests/audio/test_loopback.py`.
 - Knowledge: `knowledge/` package, `scenarios.py`, corresponding new tests.
 - UI: `ui/main_window.py`, optional `ui/scenario_dialog.py`, UI tests.
 - Integration: `main.py`, `config.py`, `domain.py`, `llm/deepseek_client.py`,
@@ -40,7 +40,7 @@ NumPy, python-docx, pypdf, python-pptx, existing DeepSeek/httpx SSE.
 - [x] Add failing tests with a fake PyAudioWPatch backend and real SoXR: no
   microphone fallback, valid endpoint selection, 44.1/48 kHz stereo conversion,
   exact 640-byte frames, late callbacks ignored, stop wakes consumers.
-- [x] Run `.venv/Scripts/python -m pytest tests/test_loopback.py -q` and confirm
+- [x] Run `.venv/Scripts/python -m pytest tests/audio/test_loopback.py -q` and confirm
   failures identify the missing backend.
 - [x] Implement bounded callback capture, continuous resampling and cleanup;
   enumerate loopback endpoints without opening a recording stream.

@@ -11,7 +11,7 @@ import pytest
 
 
 def harness():
-    path = Path(__file__).resolve().parents[1] / "scripts/verify_live_defense.py"
+    path = Path(__file__).resolve().parents[2] / "scripts/defense/verify_live_defense.py"
     spec = importlib.util.spec_from_file_location("grounded_live_verifier", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

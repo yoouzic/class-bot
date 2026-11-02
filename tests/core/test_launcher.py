@@ -1,6 +1,6 @@
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parents[1]
+PROJECT_ROOT = Path(__file__).parents[2]
 
 
 def test_windows_launcher_has_checkable_start_contract():

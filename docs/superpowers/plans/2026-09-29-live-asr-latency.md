@@ -13,7 +13,7 @@
 ### Task 1: Add failing ASR boundary tests
 
 **Files:**
-- Modify: \`tests/test_funasr_streaming.py\`
+- Modify: \`tests/asr/test_funasr_streaming.py\`
 
 - [x] **Step 1: Add a regression test for audio queued after a finish marker**
 
@@ -46,7 +46,7 @@ async def test_audio_after_finish_marker_is_processed_as_next_segment(monkeypatc
 Run:
 
 \`\`\`powershell
-.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_funasr_streaming.py -k after_finish_marker
+.\\.venv\\Scripts\\python.exe -m pytest -q tests/asr/test_funasr_streaming.py -k after_finish_marker
 \`\`\`
 
 Expected: FAIL because \`push_audio()\` currently returns while \`_closing\` is true, so the second segment never reaches the worker.
@@ -112,7 +112,7 @@ Course hotwords and exact corrections still apply to each streaming inference; o
 - [x] **Step 4: Run the focused ASR tests**
 
 \`\`\`powershell
-.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_funasr_streaming.py tests/test_main.py
+.\\.venv\\Scripts\\python.exe -m pytest -q tests/asr/test_funasr_streaming.py tests/core/test_main.py
 \`\`\`
 
 Expected: all focused tests pass, including the new boundary regression and the explicit offline refinement tests.
@@ -120,7 +120,7 @@ Expected: all focused tests pass, including the new boundary regression and the 
 ### Task 3: Prevent high-thinking answer truncation
 
 **Files:**
-- Modify: \`tests/test_deepseek_client.py\`
+- Modify: \`tests/llm/test_deepseek_client.py\`
 - Modify: \`src/classbot/llm/deepseek_client.py\`
 
 - [x] **Step 1: Change the high-thinking contract test first**
@@ -140,7 +140,7 @@ assert payload["max_tokens"] == 1024
 - [x] **Step 2: Verify the focused test fails before production code changes**
 
 \`\`\`powershell
-.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_deepseek_client.py -k textbook
+.\\.venv\\Scripts\\python.exe -m pytest -q tests/llm/test_deepseek_client.py -k textbook
 \`\`\`
 
 Expected: FAIL because the current thinking branch sends \`max_tokens=512\`.
@@ -158,7 +158,7 @@ Keep non-thinking classroom responses at 120 tokens for low latency.
 - [x] **Step 4: Run the DeepSeek client tests**
 
 \`\`\`powershell
-.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_deepseek_client.py tests/test_config.py
+.\\.venv\\Scripts\\python.exe -m pytest -q tests/llm/test_deepseek_client.py tests/core/test_config.py
 \`\`\`
 
 Expected: all tests pass, including enabled thinking, textbook context, and disabled thinking contracts.
@@ -198,7 +198,7 @@ Compare final transcript/question counts and representative terms against the pr
 \`\`\`powershell
 git diff --check
 git status --short
-git add src/classbot/asr/funasr_streaming.py src/classbot/main.py src/classbot/llm/deepseek_client.py tests/test_funasr_streaming.py tests/test_main.py tests/test_deepseek_client.py README.md docs/superpowers/plans/2026-09-29-live-asr-latency.md
+git add src/classbot/asr/funasr_streaming.py src/classbot/main.py src/classbot/llm/deepseek_client.py tests/asr/test_funasr_streaming.py tests/core/test_main.py tests/llm/test_deepseek_client.py README.md docs/superpowers/plans/2026-09-29-live-asr-latency.md
 git commit -m "fix: keep live ASR responsive across segments"
 \`\`\`
 

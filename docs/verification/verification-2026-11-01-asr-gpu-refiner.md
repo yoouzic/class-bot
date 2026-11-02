@@ -10,7 +10,7 @@
 - `FunAsrStreamingRecognizer` 接受可选 `refiner`：会话开始后台预加载；精修时已加载则走离线解码，未加载或推理失败则回退原有流式整段重解码，行为与现有 `final_refinement` 开关兼容。
 - 装配在 `main.py._make_recognizer`：`CLASSBOT_ASR_REFINER=seaco`（默认）启用离线精修，`stream` 保留旧行为，`off` 关闭；精修输出经过课程纠错表，且因标点模型而带完整标点。
 - 用户 `.env` 已切换 `CLASSBOT_ASR_DEVICE=cuda`；`.env.example` 记录 cu130 安装命令。
-- 冒烟脚本：`scripts/verify_asr_gpu.py`（流式加载、分块推理、离线加载加预热、整段精修、显存峰值）。
+- 冒烟脚本：`scripts/asr/verify_asr_gpu.py`（流式加载、分块推理、离线加载加预热、整段精修、显存峰值）。
 
 ## 实测（RTX 5070 Laptop GPU，torch 2.14.1+cu130，模型本地缓存命中）
 
@@ -28,8 +28,8 @@
 
 ## 测试
 
-- `tests/test_offline_refiner.py`：缓存校验、别名首下载、损坏权重不换、热词参数、无流式参数、预热成功/失败（失败保持未加载以便回退）、加载幂等。
-- `tests/test_funasr_streaming.py` 新增：已加载走离线精修（不触发流式整段重解码、纠错表仍生效）、未加载回退流式、离线失败回退流式、会话启动后台预热、`final_refinement=false` 不预热、stop 取消后台加载。
+- `tests/asr/test_offline_refiner.py`：缓存校验、别名首下载、损坏权重不换、热词参数、无流式参数、预热成功/失败（失败保持未加载以便回退）、加载幂等。
+- `tests/asr/test_funasr_streaming.py` 新增：已加载走离线精修（不触发流式整段重解码、纠错表仍生效）、未加载回退流式、离线失败回退流式、会话启动后台预热、`final_refinement=false` 不预热、stop 取消后台加载。
 - 全量：`python -m pytest -q` 共 **1147 passed, 4 skipped**；`ruff check src tests scripts` 通过；`git diff --check` 无空白错误。
 
 ## 未验证项（下一步）
@@ -40,5 +40,5 @@
 ## 2026-11-02 追加：跨会话热缓存与 lookback 实验
 
 - 流式与精修模型增加进程内按设备热缓存（`build_model` / `build_refiner_model`），模型对象无会话状态，可跨监听复用：第二次“开始监听”不再重付约 20 秒流式加载与后台精修加载；流式构建后吸收一次 600ms 静音预热（约 1.5 秒 CUDA kernel 编译）。测试以 autouse fixture 清缓存隔离。
-- 真实录音质量评测（三变体全量、1238 段）见 `docs/eval-2026-11-02-asr-quality.md`：离线精修 RTF 0.036（旧精修 0.191），热词密度 +16%，空段 -35%；无人工参考，不声称准确率。
+- 真实录音质量评测（三变体全量、1238 段）见 `docs/eval/eval-2026-11-02-asr-quality.md`：离线精修 RTF 0.036（旧精修 0.191），热词密度 +16%，空段 -35%；无人工参考，不声称准确率。
 - `encoder_chunk_look_back` 4→12 实验（600 秒流式输出对离线参照）：相似度 0.653→0.639、热词 66→57、RTF 0.080→0.136，**全面更差**，参数维持 4。评测脚本新增 `--lookback` 与 `--variants` 便于复测。

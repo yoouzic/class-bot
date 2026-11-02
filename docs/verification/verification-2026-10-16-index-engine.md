@@ -60,7 +60,7 @@ V2 先取得不截断的完整 token 序列，再显式切分每窗 510 个正�
 复用计算结果；每个文件的片段和来源位置仍保留。每 64 行持久保存前缀，完整后原子发布。
 
 ```powershell
-.\.venv-index-gpu\Scripts\python.exe -u scripts/build_knowledge_index.py `
+.\.venv-index-gpu\Scripts\python.exe -u scripts/index/build_knowledge_index.py `
   --offline --threads 4 --device cuda `
   --scenario 4f37a40efc3c4ea2bb491c73f3ac0a44 `
   --cancel-file tmp/gpu-index.cancel

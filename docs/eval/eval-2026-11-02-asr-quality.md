@@ -5,8 +5,8 @@
 **本页没有人工标注参考文本，因此只声称差异与速度，不声称准确率。** 复现：
 
 ```
-PYTHONPATH=src .venv/Scripts/python.exe scripts/eval_asr_variants.py --audio "<录音>" --out tmp/eval-asr-20261101 --device cuda
-PYTHONPATH=src .venv/Scripts/python.exe scripts/analyze_asr_eval.py --dir tmp/eval-asr-20261101
+PYTHONPATH=src .venv/Scripts/python.exe scripts/asr/eval_asr_variants.py --audio "<录音>" --out tmp/eval-asr-20261101 --device cuda
+PYTHONPATH=src .venv/Scripts/python.exe scripts/asr/analyze_asr_eval.py --dir tmp/eval-asr-20261101
 ```
 
 ## 变体说明
@@ -63,4 +63,4 @@ PYTHONPATH=src .venv/Scripts/python.exe scripts/analyze_asr_eval.py --dir tmp/ev
 1. **新精修（offline）以更低成本产出更高术语命中**，作为生产默认（`CLASSBOT_ASR_REFINER=seaco`）的决策得到本次数据支持。
 2. 流式 partial 路径保持不变——它的错字由段末精修在最终转写里纠正，正是本次架构的设计意图。
 3. 遗留未知：离线解码在 60 秒强制切分的中断处偶有补全式幻觉（如"审合灯事项"）；无参考文本，整体准确率未声称。要闭环需要一段 10–15 分钟人工标注对齐 CER。
-4. 评测基建留存：`scripts/eval_asr_variants.py`（跑三变体）、`scripts/analyze_asr_eval.py`（出对比指标），下次录音只需换 `--audio` 与 `--reference`。
+4. 评测基建留存：`scripts/asr/eval_asr_variants.py`（跑三变体）、`scripts/asr/analyze_asr_eval.py`（出对比指标），下次录音只需换 `--audio` 与 `--reference`。

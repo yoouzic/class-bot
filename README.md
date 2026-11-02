@@ -7,8 +7,8 @@ Classbot 是 Windows 线上答辩助手，适用于组会、竞赛和项目答�
 ## 仓库结构
 
 - `src/classbot/`：应用代码（`asr/`、`audio/`、`knowledge/`、`llm/`、`ui/`）
-- `tests/`：pytest 回归与离线评测用例
-- `scripts/`：索引构建、ASR 评测、答辩/音频验证脚本
+- `tests/`：pytest 回归与离线评测用例，见 [tests/README.md](tests/README.md)
+- `scripts/`：索引构建、ASR 评测、答辩/音频验证脚本，见 [scripts/README.md](scripts/README.md)
 - `courses/`：课程热词、纠错与本地教材参考
 - `docs/`：设计与验证文档，索引见 [docs/README.md](docs/README.md)
 - `.cache/`、`.venv/`、`tmp/`、音频和 PDF 属于本地文件，不提交
