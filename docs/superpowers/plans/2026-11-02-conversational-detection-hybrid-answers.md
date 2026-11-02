@@ -767,7 +767,7 @@ git diff --check
 - Consumes: `normalize_spoken_text` from Task 1.
 - Produces: `DefenseQuestionDetector.feed()` 对重说、日常问法、追问的识别；`QuestionCandidate.confidence` 为轻量规则分。
 
-- [ ] **Step 1: 写答辩回归用例（25 条）**
+- [ ] **Step 1: 写答辩回归用例（25 条 + 1 上下文用例）**
 
 Create `tests/test_defense_conversation_cases.py`:
 
@@ -852,7 +852,16 @@ _QUESTION = re.compile(
 )
 ```
 
-3. Add small-talk filter after `_INCOMPLETE`：
+3. Refine `_INCOMPLETE`：裸 `如何/怎么` 才算截断，`这个结果和基线相比如何` 这类完整问句必须放行：
+
+```python
+_INCOMPLETE = re.compile(
+    r"^(?:为什么|为何|如何|怎么|是否|能否)[？?。\s]*$|"
+    r"(?:因为|以及|为什么要|如何去)[？?。\s]*$"
+)
+```
+
+4. Add small-talk filter after `_INCOMPLETE`：
 
 ```python
 _SMALL_TALK = re.compile(
@@ -860,13 +869,13 @@ _SMALL_TALK = re.compile(
 )
 ```
 
-4. In `feed`, normalize raw before clause splitting:
+5. In `feed`, normalize raw before clause splitting:
 
 ```python
         raw = normalize_spoken_text(event.text.strip())
 ```
 
-5. Add `not _SMALL_TALK.search(stripped)` to `eligible`:
+6. Add `not _SMALL_TALK.search(stripped)` to `eligible`:
 
 ```python
             eligible = (
@@ -879,7 +888,7 @@ _SMALL_TALK = re.compile(
             )
 ```
 
-6. Replace the fixed confidence `0.8` with a score:
+7. Replace the fixed confidence `0.8` with a score:
 
 ```python
         score = self._score(raw, normalized, request, event.is_final)
