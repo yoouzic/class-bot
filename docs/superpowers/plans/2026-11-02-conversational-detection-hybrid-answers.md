@@ -1991,15 +1991,62 @@ git diff --check
 
 Append to `tests/test_web_search.py`:
 
+At the top of `tests/test_web_search.py`, extend the existing imports with:
+
 ```python
+import asyncio
+import time
 from classbot.llm import web_search as web_module
 from classbot.llm.web_search import fetch_web, research_web
+```
 
+Then append the following tests:
+
+```python
 _FETCH_BODY = {
     "title": "页面标题",
     "url": "https://example.com/page",
     "content": "# 标题\n正文内容",
 }
+
+
+class _SlowTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json=_DEEPSEEK_BODY)
+
+
+@pytest.mark.asyncio
+async def test_search_web_total_budget_bounds_fallback():
+    async with httpx.AsyncClient(
+        transport=_SlowTransport(), base_url="https://api.deepseek.example"
+    ) as client:
+        started = time.monotonic()
+        results = await web_module.search_web(
+            "查询",
+            client,
+            api_key="test-key",
+            timeout=1.0,
+            total_budget=0.05,
+        )
+        elapsed = time.monotonic() - started
+    assert results == ()
+    assert elapsed < 0.5
+
+
+def test_web_env_helpers_fall_back(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_FETCH", " ALWAYS ")
+    assert web_module.fetch_mode_from_env() == "always"
+    monkeypatch.setenv("CLASSBOT_WEB_FETCH", "garbage")
+    assert web_module.fetch_mode_from_env() == "auto"
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH_TIMEOUT", "inf")
+    assert web_module.timeout_from_env(
+        "CLASSBOT_WEB_SEARCH_TIMEOUT", 1.8
+    ) == 1.8
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH_TIMEOUT", "-1")
+    assert web_module.timeout_from_env(
+        "CLASSBOT_WEB_SEARCH_TIMEOUT", 1.8
+    ) == 1.8
 
 
 @pytest.mark.asyncio
@@ -2126,7 +2173,6 @@ async def test_research_web_fetch_timeout_keeps_results(monkeypatch):
     async def slow_fetch(*args, **kwargs):
         import asyncio
         await asyncio.sleep(1)
-        return None
 
     async def fake_search(*args, **kwargs):
         return (web_module.WebResult("结果", "https://example.com", "短"),)
@@ -2171,7 +2217,9 @@ In `src/classbot/llm/web_search.py`:
 
 ```python
 import asyncio
+import math
 import os
+import time
 from dataclasses import replace
 ```
 
@@ -2268,7 +2316,64 @@ def timeout_from_env(name: str, default: float) -> float:
         value = float(os.getenv(name, ""))
     except ValueError:
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
+```
+
+5b. Add a total budget to `search_web` so provider fallback cannot exceed the Search budget:
+
+```python
+async def search_web(
+    query: str,
+    http_client: httpx.AsyncClient,
+    *,
+    api_key: str | None = None,
+    limit: int = 4,
+    timeout: float = 6.0,
+    total_budget: float | None = None,
+) -> tuple[WebResult, ...]:
+    query = " ".join(query.split())[:_QUERY_LIMIT]
+    if not query:
+        return ()
+    deadline = time.monotonic() + (
+        total_budget if total_budget is not None else timeout
+    )
+    if api_key:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return ()
+        results = await _search_deepseek(
+            query, http_client, api_key, limit, min(timeout, remaining)
+        )
+        if results:
+            return results
+    headers = {"User-Agent": _USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
+    for provider, url in (
+        ("bing", _BING_URL),
+        ("duckduckgo", _DUCKDUCKGO_URL),
+    ):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            response = await http_client.get(
+                url,
+                params={"q": query},
+                headers=headers,
+                timeout=min(timeout, remaining),
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            if provider == "bing":
+                results = _parse_bing(response.text, limit)
+            else:
+                results = _parse(response, _DUCKDUCKGO_RESULT_RE, limit)
+        except (httpx.HTTPError, OSError) as error:
+            _LOGGER.debug("web search provider %s failed: %s", provider, error)
+            continue
+        if results:
+            return results
+        _LOGGER.debug("web search provider %s returned no parseable results", provider)
+    return ()
 ```
 
 6. Add `research_web`:
@@ -2290,6 +2395,7 @@ async def research_web(
         api_key=api_key,
         limit=limit,
         timeout=search_timeout,
+        total_budget=search_timeout,
     )
     mode = fetch_mode if fetch_mode in {"auto", "off", "always"} else "auto"
     if not results or not api_key or mode == "off":
@@ -2320,12 +2426,11 @@ async def research_web(
         await asyncio.gather(*pending, return_exceptions=True)
     fetched: dict[str, WebResult] = {}
     for task, candidate in zip(tasks, candidates):
-        if task not in done:
+        if task not in done or task.cancelled():
             continue
-        try:
-            page = task.result()
-        except Exception:
-            page = None
+        if task.exception() is not None:
+            continue
+        page = task.result()
         if page is not None:
             fetched[candidate.url] = page
     return tuple(
