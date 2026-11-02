@@ -126,7 +126,11 @@ async def test_classroom_keeps_its_existing_prompt_and_context_in_real_request(m
         await asyncio.gather(*pipeline._answer_tasks)
         await client.aclose()
     assert len(requests) == 1
-    assert requests[0]["messages"][1]["content"] == "学科：课堂\n问题：背景信息：课堂背景\n问题：它为什么成立？"
+    user_content = requests[0]["messages"][1]["content"]
+    assert "背景信息：课堂背景" in user_content
+    assert "问题：它为什么成立？" in user_content
+    assert "本地材料候选" in user_content
+    assert "网络检索候选" in user_content
     system = requests[0]["messages"][0]["content"]
     assert system.startswith("你是一个课堂问答助手。只输出直接、准确、简短的中文答案（1～3句）")
     assert "否定能力" not in system and "能力缺失" not in system and "逐条检查直接支持" not in system
