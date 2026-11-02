@@ -33,6 +33,7 @@ _INCOMPLETE = re.compile(
 )
 _SMALL_TALK = re.compile(
     r"^(?:你好|大家好|早上好|晚上好|谢谢|多谢|辛苦了|再见|拜拜|吃了吗|最近怎么样)"
+    r"[。！？!?，,\s]*$"
 )
 
 
