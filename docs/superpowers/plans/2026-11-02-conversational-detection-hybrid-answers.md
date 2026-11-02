@@ -245,7 +245,7 @@ Expected: 只出现本任务的两个文件；无空白错误。**不要提交�
 - Consumes: `normalize_spoken_text` from Task 1.
 - Produces: `QuestionDetector.feed()` 对短问句、上下文追问和卡壳文本的识别结果；`QuestionCandidate.context` 带上文。
 
-- [ ] **Step 1: 写课堂回归用例（35 条）**
+- [ ] **Step 1: 写课堂回归用例（58 条）**
 
 Create `tests/test_classroom_conversation_cases.py`:
 
@@ -282,6 +282,22 @@ STANDALONE_CASES = [
     ("我是说，这个接口怎么调用", True),
     ("这个这个", False),
     ("呃", False),
+    ("支持中文呀", True),
+    ("部署复杂吧", True),
+    ("这个方案可行啊", True),
+    ("这个接口来着", True),
+    ("能听见吗", False),
+    ("声音清楚吗", False),
+    ("看到屏幕了吗", False),
+    ("共享屏幕了吗", False),
+    ("麦克风好了吗", False),
+    ("人来齐了吗", False),
+    ("点个名好吗", False),
+    ("大家安静好吗", False),
+    ("先休息好吗", False),
+    ("明白了吗", False),
+    ("最近好吗", False),
+    ("说他在所有之上啊", False),
 ]
 
 CONTEXT_CASES = [
@@ -295,6 +311,13 @@ CONTEXT_CASES = [
     ("打开教材", "这个呢", False),
     ("模型效果怎么样", "这个这个", False),
     ("模型效果怎么样", "呃", False),
+    ("支持离线使用吗", "召回率呀", True),
+    ("支持离线使用吗", "召回率吧", True),
+    ("支持离线使用吗", "因为我现在的关系呢", False),
+    ("支持离线使用吗", "这个我们等一下再讲呢", False),
+    ("支持离线使用吗", "好呢", False),
+    ("支持离线使用吗", "讲呢", False),
+    ("后面再讲呢", "这个呢", False),
 ]
 
 
@@ -311,6 +334,17 @@ def test_classroom_context_cases(seed, text, expected):
     detector.feed(TranscriptEvent(text=seed, is_final=True, segment_id=1))
     event = TranscriptEvent(text=text, is_final=True, segment_id=2)
     assert bool(detector.feed(event)) is expected
+
+
+def test_context_is_attached_to_followup():
+    detector = QuestionDetector("历史")
+    detector.feed(
+        TranscriptEvent(text="支持离线使用吗", is_final=True, segment_id=1)
+    )
+    candidate = detector.feed(
+        TranscriptEvent(text="这个呢", is_final=True, segment_id=2)
+    )[0]
+    assert "支持离线使用吗" in candidate.context
 ```
 
 - [ ] **Step 2: 运行测试，记录失败**
@@ -350,15 +384,33 @@ from classbot.spoken_text import normalize_spoken_text
 In `src/classbot/question_detector.py`, after `_CONFIRMATION_RE` 定义处添加：
 
 ```python
-_PARTICLE_TAILS = ("呢", "吗")
-_FOLLOWUP_STARTS = (
-    "那", "那么", "还有", "另外", "换成", "如果",
-    "这个", "它", "他们", "她们",
-)
+_PARTICLE_TAILS = ("呢", "吗", "呀", "啊", "吧", "来着")
 _CONTEXT_QUESTION_SIGNALS = (
     "什么", "哪", "谁", "为什么", "为何", "如何", "怎么",
     "多少", "多久", "是否", "有没有", "是不是", "能不能",
     "可不可以", "会不会",
+)
+_SHORT_CONTENT_CUES = (
+    "支持", "部署", "需要", "可以", "能", "有", "是", "会", "要", "用",
+    "做", "实现", "调用", "安装", "运行", "配置", "可行", "复杂", "区别",
+    "风险", "效果", "性能", "版本", "接口", "数据", "模型", "方案", "功能",
+    "步骤", "参数", "准确率", "召回率", "指标", "延迟", "内存", "显存",
+    "训练", "测试", "实验", "结果", "原因", "原理", "定义", "作用", "流程",
+)
+_SHORT_MANAGEMENT_RE = re.compile(
+    r"(?:能?听(?:见|得到|得见)|听(?:清楚|清|明白|懂)|声音|麦克风|屏幕|共享屏幕|摄像头|"
+    r"点(?:个)?名|到齐|来齐|安静|休息|明白|听懂|清楚|懂|看到|看见)"
+    r"(?:了|好了|一下|清楚|好)?(?:吗|呀|啊|吧|呢)?$"
+)
+_GREETING_RE = re.compile(
+    r"^(?:你好|大家好|各位好|老师好|早上好|晚上好|最近好吗|吃了吗|辛苦了|谢谢)"
+)
+_DISCOURSE_CONTINUATION_PREFIXES = (
+    "因为", "所以", "但是", "可是", "然后", "而且", "不过",
+)
+_DISCOURSE_CONTINUATION_MARKERS = (
+    "等一下", "等会", "后面", "稍后", "再讲", "再说", "先讲",
+    "再讨论", "下一个", "继续看", "继续讲",
 )
 
 
@@ -371,28 +423,49 @@ def _is_particle_question(
         return False
     if normalized_text.endswith("着呢"):
         return False
-    if _MANAGEMENT_RE.search(normalized_text) or _CONFIRMATION_RE.search(
-        normalized_text
+    if (
+        _MANAGEMENT_RE.search(normalized_text)
+        or _SHORT_MANAGEMENT_RE.search(normalized_text)
+        or _GREETING_RE.search(normalized_text)
+        or _CONFIRMATION_RE.search(normalized_text)
     ):
         return False
-    if normalized_text.endswith("吗"):
-        return len(normalized_text) >= 4
+    if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+        return False
+    if any(
+        marker in normalized_text
+        for marker in _DISCOURSE_CONTINUATION_MARKERS
+    ):
+        return False
+    stem = normalized_text
+    for tail in _PARTICLE_TAILS:
+        if stem.endswith(tail):
+            stem = stem[: -len(tail)]
+            break
     if has_context:
+        if len(normalized_text) == 2 and normalized_text not in {
+            "它呢", "他呢", "她呢",
+        }:
+            return False
         return len(normalized_text) >= 2
-    return len(normalized_text) >= 5 and (
-        "的" in normalized_text
-        or normalized_text.startswith(
-            ("这个", "那个", "它", "他们", "她们")
-        )
-    )
+    if len(normalized_text) < 5:
+        return False
+    if "的" in normalized_text or normalized_text.startswith(
+        ("这个", "那个", "它", "他们", "她们")
+    ):
+        return True
+    if any(signal in normalized_text for signal in _CONTEXT_QUESTION_SIGNALS):
+        return True
+    return any(cue in stem for cue in _SHORT_CONTENT_CUES)
 
 
 def _is_short_question(
     normalized_text: str,
     *,
     has_context: bool,
+    minimum_length: int,
 ) -> bool:
-    if len(normalized_text) >= 7:
+    if len(normalized_text) >= minimum_length:
         return False
     return _is_particle_question(normalized_text, has_context=has_context)
 ```
@@ -473,7 +546,9 @@ At the start of `feed`, replace the `_extract_question_text` call with:
         )
         context = self._context_for(event.text, normalized_text)
         short_question = _is_short_question(
-            normalized_text, has_context=bool(context)
+            normalized_text,
+            has_context=bool(context),
+            minimum_length=self.minimum_length,
         )
 ```
 
@@ -523,23 +598,30 @@ Replace `_is_context_eligible` entirely with:
 ```python
     @staticmethod
     def _is_context_eligible(normalized_text: str) -> bool:
-        if len(normalized_text) < 8:
-            return (
-                len(normalized_text) >= 4
-                and (
-                    normalized_text.endswith(("吗", "呢", "呀", "啊"))
-                    or any(
-                        signal in normalized_text
-                        for signal in _CONTEXT_QUESTION_SIGNALS
-                    )
-                )
-                and not normalized_text.endswith("着呢")
-                and not _MANAGEMENT_RE.search(normalized_text)
-                and not _CONFIRMATION_RE.search(normalized_text)
-            )
-        if _MANAGEMENT_RE.search(normalized_text):
+        if (
+            _MANAGEMENT_RE.search(normalized_text)
+            or _SHORT_MANAGEMENT_RE.search(normalized_text)
+            or _GREETING_RE.search(normalized_text)
+            or _CONFIRMATION_RE.search(normalized_text)
+        ):
             return False
-        return not _CONFIRMATION_RE.search(normalized_text)
+        if normalized_text.startswith(_DISCOURSE_CONTINUATION_PREFIXES):
+            return False
+        if any(
+            marker in normalized_text
+            for marker in _DISCOURSE_CONTINUATION_MARKERS
+        ):
+            return False
+        if len(normalized_text) < 8:
+            if len(normalized_text) < 4:
+                return False
+            if _is_particle_question(normalized_text, has_context=False):
+                return True
+            return any(
+                signal in normalized_text
+                for signal in _CONTEXT_QUESTION_SIGNALS
+            )
+        return True
 ```
 
 - [ ] **Step 10: 运行课堂回归用例**
@@ -550,7 +632,7 @@ Run:
 .venv/Scripts/python.exe -m pytest tests/test_classroom_conversation_cases.py -q
 ```
 
-Expected: PASS（35 passed）。
+Expected: PASS（58 passed + 1 context assertion）。
 
 - [ ] **Step 11: 运行现有检测器测试**
 
