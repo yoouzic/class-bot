@@ -698,6 +698,40 @@ async def test_audio_loop_includes_recent_preroll_when_speech_starts():
 
 
 @pytest.mark.asyncio
+async def test_workspace_resources_drain_when_application_is_already_quitting():
+    factory = RuntimeFactory()
+    controller = make_controller(factory)
+    drained = []
+
+    async def shutdown_resources():
+        drained.append("workspace")
+
+    controller.shutdown_resources = shutdown_resources
+    controller._application_quitting = True
+    await controller.shutdown()
+    assert drained == ["workspace"]
+
+
+@pytest.mark.asyncio
+async def test_forced_segment_continuation_does_not_replay_prior_audio():
+    factory = RuntimeFactory(segment_events=[
+        SegmentEvent(speech_started=True),
+        SegmentEvent(speech_ended=True),
+        SegmentEvent(speech_started=True, continued=True),
+        SegmentEvent(speech_ended=True),
+    ])
+    controller = make_controller(factory)
+    await controller.start()
+    capture = factory.sessions[0]["capture"]
+    recognizer = factory.sessions[0]["recognizer"]
+    for frame in (b"first", b"forced end", b"continuation", b"end"):
+        capture.feed(frame)
+    await wait_until(lambda: recognizer.finish_calls == 2)
+    assert recognizer.push_calls == [b"first", b"forced end", b"continuation", b"end"]
+    await controller.stop()
+
+
+@pytest.mark.asyncio
 async def test_audio_callback_error_reports_mic_error_and_cleans_runtime():
     factory = RuntimeFactory(
         capture_frame_error=AudioCaptureError("callback input overflow")

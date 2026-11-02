@@ -6,6 +6,18 @@ from pathlib import Path
 
 COURSES_ROOT = Path(__file__).resolve().parents[2] / "courses"
 _COURSE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_GENERIC_QUERY_RE = re.compile(
+    r"什么样的(?:情况下|情况)?|在什么情况下|有什么|有哪些|"
+    r"为什么|是什么|什么|怎样|如何|哪些|哪个|哪几|分几|"
+    r"是不是|是否|能不能|可不可以|请问|我们的|我们|这个|那个|一个|问题"
+)
+
+
+def _reference_query_terms(text: str) -> set[str]:
+    # Strip question scaffolding before scoring: a shared "情况下" is not evidence.
+    text = _GENERIC_QUERY_RE.sub(" ", text)
+    fragments = re.split(r"[的呢吗啊呃吧呀在，。；：！？\s]+", text)
+    return set().union(*(_terms(fragment) for fragment in fragments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +60,7 @@ class CourseProfile:
         if not question.strip() or not self.reference_chunks or limit <= 0:
             return ()
 
-        query_terms = _terms(question)
+        query_terms = _reference_query_terms(question)
         scored: list[tuple[int, int, str]] = []
         for index, chunk in enumerate(self.reference_chunks):
             score = len(query_terms & _terms(chunk))

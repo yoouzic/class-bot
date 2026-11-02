@@ -22,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 class _QuestionState:
     card: AnswerCard
     normalized_text: str
+    answer_prompt: str
+    context: str
     is_final: bool
     revision: int = 0
     task: asyncio.Task[None] | None = None
@@ -39,7 +41,14 @@ class LivePipeline:
         on_delta: Callback,
         on_status: Callback | None = None,
         on_transcript: Callback | None = None,
+        *,
+        answer_stability_seconds: float = 0.7,
+        scenario_name: str = "",
     ) -> None:
+        if answer_stability_seconds < 0:
+            raise ValueError("answer_stability_seconds must not be negative")
+        self._answer_stability_seconds = answer_stability_seconds
+        self._scenario_name = scenario_name
         self._recognizer = recognizer
         self._detector = detector
         self._client = client
@@ -49,7 +58,9 @@ class LivePipeline:
         self._on_transcript = on_transcript
 
         self._states: OrderedDict[str, _QuestionState] = OrderedDict()
+        self._segment_questions: OrderedDict[int | str | None, str] = OrderedDict()
         self._answer_tasks: set[asyncio.Task[None]] = set()
+        self._answer_slots = asyncio.Semaphore(2)
         self._lifecycle_lock = asyncio.Lock()
         self._prepare_task: asyncio.Task[None] | None = None
         self._run_task: asyncio.Task[None] | None = None
@@ -141,10 +152,19 @@ class LivePipeline:
                     "on_transcript",
                 )
                 candidates = self._detector.feed(event)
+                if event.is_final:
+                    previous_id = self._segment_questions.pop(event.segment_id, None)
+                    if previous_id is not None and not candidates:
+                        await self._invalidate_question(previous_id)
                 for candidate in candidates:
                     if self._stop_requested:
                         break
                     await self._handle_candidate(candidate)
+                    if not event.is_final:
+                        self._segment_questions[event.segment_id] = candidate.question_id
+                        self._segment_questions.move_to_end(event.segment_id)
+                        while len(self._segment_questions) > _STATE_LIMIT:
+                            self._segment_questions.popitem(last=False)
 
             await self._wait_for_answer_tasks()
         except BaseException as error:
@@ -242,7 +262,8 @@ class LivePipeline:
             self._add_exception_note(error, "pipeline cleanup", cleanup_error)
 
     async def _handle_candidate(self, candidate: QuestionCandidate) -> None:
-        normalized_text = normalize_text(candidate.text)
+        normalized_text = normalize_text(candidate.text).rstrip("呢啊呀吧")
+        answer_prompt = candidate.text if self._scenario_name else self._answer_prompt(candidate)
         state = self._states.get(candidate.question_id)
 
         if state is None:
@@ -252,32 +273,62 @@ class LivePipeline:
                 subject=candidate.subject,
                 status=CardStatus.DETECTED,
                 timestamp_ms=self._elapsed_ms(),
+                scenario_name=self._scenario_name,
             )
             state = _QuestionState(
                 card=card,
                 normalized_text=normalized_text,
+                answer_prompt=answer_prompt,
+                context=candidate.context,
                 is_final=candidate.is_final,
             )
             self._states[candidate.question_id] = state
             await self._evict_old_states()
             await self._call(self._on_card, card, "on_card")
-            self._start_answer(state, candidate.text, candidate.subject)
+            self._start_answer(state, answer_prompt, candidate.subject)
             return
 
         self._states.move_to_end(candidate.question_id)
         if state.normalized_text == normalized_text:
             changed = False
+            restart_answer = False
+            promote_pending = False
             if candidate.is_final and not state.is_final:
                 state.is_final = True
                 changed = True
+                promote_pending = state.card.status is CardStatus.DETECTED
             if candidate.is_final and state.card.question != candidate.text:
                 state.card.question = candidate.text
                 changed = True
             if state.card.subject != candidate.subject:
                 state.card.subject = candidate.subject
                 changed = True
+            context_changed = state.context != candidate.context
+            context_requires_restart = context_changed and (
+                state.card.status is CardStatus.DETECTED
+                or any(word in candidate.text for word in (
+                    "这个", "那个", "这些", "那些", "上述", "前者", "后者", "它", "还有", "分别",
+                ))
+            )
+            if context_requires_restart or promote_pending:
+                old_task = state.task
+                state.revision += 1
+                await self._cancel_task(old_task, "context revision")
+                state.task = None
+                state.answer_prompt = answer_prompt
+                state.context = candidate.context
+                state.card.answer = ""
+                state.card.sources = ()
+                state.card.status = CardStatus.DETECTED
+                state.card.error = None
+                changed = True
+                restart_answer = True
+            elif context_changed:
+                state.context = candidate.context
             if changed:
                 await self._call(self._on_card, state.card, "on_card")
+            if restart_answer:
+                self._start_answer(state, answer_prompt, candidate.subject)
             return
 
         old_task = state.task
@@ -285,14 +336,37 @@ class LivePipeline:
         await self._cancel_task(old_task, "revision")
         state.task = None
         state.normalized_text = normalized_text
+        state.answer_prompt = answer_prompt
+        state.context = candidate.context
         state.is_final = candidate.is_final
         state.card.question = candidate.text
         state.card.subject = candidate.subject
         state.card.answer = ""
+        state.card.sources = ()
         state.card.status = CardStatus.DETECTED
         state.card.error = None
         await self._call(self._on_card, state.card, "on_card")
-        self._start_answer(state, candidate.text, candidate.subject)
+        self._start_answer(state, answer_prompt, candidate.subject)
+
+    async def _invalidate_question(self, question_id: str) -> None:
+        state = self._states.get(question_id)
+        if state is None:
+            return
+        state.revision += 1
+        await self._cancel_task(state.task, "rejected final transcript")
+        state.task = None
+        state.card.answer = ""
+        state.card.sources = ()
+        state.card.error = None
+        state.card.status = CardStatus.CANCELLED
+        await self._call(self._on_card, state.card, "on_card")
+
+    @staticmethod
+    def _answer_prompt(candidate: QuestionCandidate) -> str:
+        context = candidate.context.strip()
+        if not context:
+            return candidate.text
+        return f"背景信息：{context}\n问题：{candidate.text}"
 
     async def _evict_old_states(self) -> None:
         while len(self._states) > _STATE_LIMIT:
@@ -325,24 +399,99 @@ class LivePipeline:
         subject: str,
     ) -> None:
         try:
+            async with self._answer_slots:
+                if self._is_current(state, revision):
+                    await self._generate_answer(state, revision, question, subject)
+        except asyncio.CancelledError:
+            if self._is_current(state, revision):
+                state.card.status = CardStatus.CANCELLED
+                await self._call(self._on_card, state.card, "on_card")
+            raise
+
+    async def _generate_answer(
+        self,
+        state: _QuestionState,
+        revision: int,
+        question: str,
+        subject: str,
+    ) -> None:
+        try:
+            if not state.is_final:
+                await asyncio.sleep(self._answer_stability_seconds)
             if not self._is_current(state, revision):
                 return
             state.card.status = CardStatus.ANSWERING
             state.card.error = None
             await self._call(self._on_card, state.card, "on_card")
-            stream: AsyncIterator[str] = self._client.stream_answer(question, subject)
-            async for delta in stream:
+            prepare = getattr(self._client, "prepare_answer", None)
+            prepare_local = getattr(self._client, "prepare_answer_with_local_context", None)
+            if self._scenario_name and callable(prepare_local):
+                prepared = await prepare_local(question, subject, local_context=state.context)
+            elif prepare is not None:
+                prepared = await prepare(question, subject)
+            else:
+                prepared = None
+            if prepared is not None:
                 if not self._is_current(state, revision):
                     return
-                if not delta:
-                    continue
-                state.card.answer += str(delta)
+                state.card.sources = prepared.sources
+                await self._call(self._on_card, state.card, "on_card")
+            grounded_answer = getattr(
+                self._client, "grounded_answer_with_web_fallback", None
+            ) or getattr(self._client, "grounded_answer", None)
+            if self._scenario_name and not callable(grounded_answer):
+                raise ValueError("答辩客户端缺少证据核验接口，未发布未经核验的回答")
+            if self._scenario_name:
+                if not self._is_current(state, revision):
+                    return
+                if prepared is None:
+                    raise ValueError("答辩证据核验缺少本次资料候选")
+                # A complete, proof-bound response is validated before any
+                # text reaches the card. No free-form draft is sent or shown.
+                verified = await grounded_answer(question, subject, prepared=prepared)
+                if not self._is_current(state, revision):
+                    return
+                verified_text = getattr(verified, "text", None)
+                if not isinstance(verified_text, str) or not verified_text.strip():
+                    raise ValueError("答辩证据核验没有返回可发布的内容")
+                state.card.answer = verified_text
                 await self._call(
-                    self._on_delta,
-                    state.card.question_id,
-                    state.card.answer,
-                    "on_delta",
+                    self._on_delta, state.card.question_id, state.card.answer, "on_delta",
                 )
+            else:
+                if prepared is not None:
+                    stream = self._client.stream_answer(question, subject, prepared=prepared)
+                else:
+                    stream: AsyncIterator[str] = self._client.stream_answer(question, subject)
+                stream_failure: BaseException | None = None
+                try:
+                    async for delta in stream:
+                        if not self._is_current(state, revision):
+                            return
+                        if not delta:
+                            continue
+                        state.card.answer += str(delta)
+                        await self._call(
+                            self._on_delta,
+                            state.card.question_id,
+                            state.card.answer,
+                            "on_delta",
+                        )
+                except BaseException as error:
+                    stream_failure = error
+                    raise
+                finally:
+                    # Callback cancellation can leave the legacy stream at
+                    # yield. Its owner closes it in this same answer task.
+                    close_stream = getattr(stream, "aclose", None)
+                    if callable(close_stream):
+                        try:
+                            await close_stream()
+                        except BaseException as cleanup_error:
+                            if stream_failure is None:
+                                raise
+                            self._record_cleanup_error("answer stream cleanup", cleanup_error)
+                            self._add_exception_note(stream_failure, "answer stream cleanup", cleanup_error)
 
             if self._is_current(state, revision):
                 state.card.status = CardStatus.ANSWERED

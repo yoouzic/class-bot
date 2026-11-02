@@ -70,6 +70,17 @@ def test_find_reference_excerpts_returns_hit_window_with_page_marker():
     assert len(excerpts[0]) <= 180
 
 
+def test_generic_question_words_do_not_retrieve_unrelated_textbook_pages():
+    profile = course_module.CourseProfile("demo", reference_chunks=(
+        "[第335页] 在什么样的情况下采取措施取决于具体的历史环境。",
+        "[第88页] 认识的过程包括由感性认识到理性认识的飞跃。",
+    ))
+    assert profile.find_reference_excerpts("呃一个珍的的问题在什什么样的情况下呢") == ()
+    assert profile.find_reference_excerpts("认识的过程有哪些") == (
+        "[第88页] 认识的过程包括由感性认识到理性认识的飞跃。",
+    )
+
+
 def test_load_course_profile_without_course_returns_empty_profile(
     tmp_path, monkeypatch
 ):
@@ -101,4 +112,5 @@ def test_marxism_profile_covers_observed_asr_errors():
         "可助论": "唯物论",
         "意味性": "一维性",
         "三维星": "三维性",
+        "第一心原理": "第一性原理",
     }

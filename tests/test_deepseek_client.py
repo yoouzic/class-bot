@@ -10,6 +10,12 @@ from classbot.course import CourseProfile
 from classbot.llm.deepseek_client import DeepSeekClient, DeepSeekStreamError
 
 
+@pytest.fixture(autouse=True)
+def _web_search_off_by_default(monkeypatch):
+    """Keep classroom fallback tests offline unless a test opts in."""
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+
 def _settings(api_key: str | None = "test-key") -> Settings:
     return Settings(
         deepseek_api_key=api_key,
@@ -51,6 +57,8 @@ async def test_stream_answer_sends_request_contract_and_yields_sse_content():
         assert "不输出推理" in payload["messages"][0]["content"]
         assert "结合课程领域做最小纠错" in payload["messages"][0]["content"]
         assert "不要跨学科联想" in payload["messages"][0]["content"]
+        assert "题意不完整" in payload["messages"][0]["content"]
+        assert "不得自行补出问题" in payload["messages"][0]["content"]
         assert "学科：历史" in payload["messages"][1]["content"]
         assert "马克思出生于哪一年？" in payload["messages"][1]["content"]
 
@@ -60,16 +68,16 @@ async def test_stream_answer_sends_request_contract_and_yields_sse_content():
             content=(
                 "event: message\n"
                 "\n"
-                "data: {\"choices\": [{\"delta\": {\"role\": \"assistant\"}}]}\n"
-                "data: {\"choices\": [{\"delta\": {\"content\": \"马克思\"}}]}\n"
-                "data: {\"choices\": []}\n"
-                "data: {\"usage\": {\"prompt_tokens\": 1}}\n"
-                "data: {\"choices\": [{\"delta\": {\"content\": \"出生于\"}}]}\n"
-                "data: {\"choices\": [{\"delta\": {\"content\": \"\"}}]}\n"
+                'data: {"choices": [{"delta": {"role": "assistant"}}]}\n'
+                'data: {"choices": [{"delta": {"content": "马克思"}}]}\n'
+                'data: {"choices": []}\n'
+                'data: {"usage": {"prompt_tokens": 1}}\n'
+                'data: {"choices": [{"delta": {"content": "出生于"}}]}\n'
+                'data: {"choices": [{"delta": {"content": ""}}]}\n'
                 "not-data: ignored\n"
-                "data: {\"choices\": [{\"delta\": {\"content\": \"1818 年。\"}}]}\n"
+                'data: {"choices": [{"delta": {"content": "1818 年。"}}]}\n'
                 "data: [DONE]\n"
-                "data: {\"choices\": [{\"delta\": {\"content\": \"不应出现\"}}]}\n"
+                'data: {"choices": [{"delta": {"content": "不应出现"}}]}\n'
             ),
         )
 
@@ -113,9 +121,9 @@ async def test_stream_answer_can_enable_low_thinking_effort():
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
-        assert await _answer_chunks(client, "物质和意识的关系是什么？", settings.subject) == [
-            "简短回答"
-        ]
+        assert await _answer_chunks(
+            client, "物质和意识的关系是什么？", settings.subject
+        ) == ["简短回答"]
 
 
 @pytest.mark.asyncio
@@ -160,9 +168,9 @@ async def test_stream_answer_includes_relevant_textbook_reference(monkeypatch):
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
-        assert await _answer_chunks(client, "物质和意识的关系是什么？", settings.subject) == [
-            "简短回答"
-        ]
+        assert await _answer_chunks(
+            client, "物质和意识的关系是什么？", settings.subject
+        ) == ["简短回答"]
 
 
 @pytest.mark.asyncio
@@ -171,9 +179,7 @@ async def test_stream_answer_prioritizes_original_textbook_wording(
 ):
     profile = CourseProfile(
         course_id="demo",
-        reference_chunks=(
-            "[第7页] 哲学的基本问题是思维和存在的关系问题。",
-        ),
+        reference_chunks=("[第7页] 哲学的基本问题是思维和存在的关系问题。",),
     )
     monkeypatch.setenv("CLASSBOT_COURSE", "demo")
     monkeypatch.setattr(
@@ -287,7 +293,7 @@ async def test_stream_retries_once_after_incomplete_stream_without_content():
             return httpx.Response(
                 200,
                 headers={"content-type": "text/event-stream"},
-                content="data: {\"choices\": []}\n",
+                content='data: {"choices": []}\n',
             )
         return httpx.Response(
             200,
@@ -383,9 +389,103 @@ async def test_empty_completed_stream_retries_only_once():
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
-        assert await _answer_chunks(client, "问题", "历史") == []
+        with pytest.raises(DeepSeekStreamError, match="without answer content"):
+            await _answer_chunks(client, "问题", "历史")
 
     assert calls == 2
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "tool_calls"])
+@pytest.mark.asyncio
+async def test_nonstop_finish_reason_preserves_partial_text_and_raises(finish_reason):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        event = {
+            "choices": [
+                {"delta": {"content": "尚未说完"}, "finish_reason": finish_reason}
+            ]
+        }
+        return httpx.Response(
+            200,
+            content="data: "
+            + json.dumps(event, ensure_ascii=False)
+            + "\ndata: [DONE]\n",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks = []
+        with pytest.raises(DeepSeekStreamError, match=finish_reason):
+            async for chunk in client.stream_answer("问题", "历史"):
+                chunks.append(chunk)
+    assert chunks == ["尚未说完"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_without_delta_is_still_rejected():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content='data: {"choices": [{"finish_reason": "length"}]}\ndata: [DONE]\n',
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        with pytest.raises(DeepSeekStreamError, match="length"):
+            await _answer_chunks(client, "问题", "历史")
+
+
+@pytest.mark.asyncio
+async def test_normal_stop_finish_reason_is_accepted():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content='data: {"choices": [{"delta": {"content": "回答"}}]}\n'
+            'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n'
+            "data: [DONE]\n",
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        assert await _answer_chunks(client, "问题", "历史") == ["回答"]
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_answer_is_reported_as_empty_without_duplicate_retry():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            content='data: {"choices": [{"delta": {"content": "  "}}]}\ndata: [DONE]\n',
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks = []
+        with pytest.raises(DeepSeekStreamError, match="without answer content"):
+            async for chunk in client.stream_answer("问题", "历史"):
+                chunks.append(chunk)
+    assert chunks == ["  "]
+    assert calls == 1
 
 
 @pytest.mark.asyncio
@@ -453,10 +553,7 @@ async def test_stream_error_payload_raises_without_exposing_api_key():
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
-            content=(
-                'data: {"error": '
-                '{"message": "upstream failed: test-key"}}\n'
-            ),
+            content=('data: {"error": {"message": "upstream failed: test-key"}}\n'),
         )
 
     settings = _settings()
@@ -501,9 +598,7 @@ async def test_cancelling_stream_propagates_and_closes_response_stream():
         transport=httpx.MockTransport(handler), base_url=settings.base_url
     ) as http_client:
         client = DeepSeekClient(settings, http_client=http_client)
-        task = asyncio.create_task(
-            _answer_chunks(client, "问题", "历史")
-        )
+        task = asyncio.create_task(_answer_chunks(client, "问题", "历史"))
         await response_stream.started.wait()
         task.cancel()
 
@@ -567,3 +662,180 @@ async def test_owned_client_exposes_base_url_timeout_and_can_close():
     await client.aclose()
 
     assert owned_http_client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_classroom_textbook_miss_answers_from_labeled_web_candidates(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.llm.web_search import WebResult
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content)
+        assert payload["messages"][0]["role"] == "system"
+        assert "网络检索候选" in payload["messages"][0]["content"]
+        assert "教材" not in payload["messages"][0]["content"] or "不得冒充教材" in (
+            payload["messages"][0]["content"]
+        )
+        user_content = payload["messages"][1]["content"]
+        assert "网络检索候选" in user_content
+        assert "example.com/answer" in user_content
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": "网络答案（网络：示例标题）"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    async def fake_web_search(self, query: str):
+        assert "历史" in query
+        return (
+            WebResult(
+                title="示例标题",
+                url="https://example.com/answer",
+                snippet="候选摘要",
+            ),
+        )
+
+    monkeypatch.setattr(DeepSeekClient, "_web_search", fake_web_search)
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks = await _answer_chunks(client, "一个教材没写的问题", "历史")
+
+    assert chunks == ["网络答案（网络：示例标题）"]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_classroom_textbook_miss_without_web_results_keeps_base_prompt(monkeypatch):
+    async def fake_web_search(query: str):
+        return ()
+
+    monkeypatch.setattr(DeepSeekClient, "_web_search", fake_web_search)
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content='data: {"choices": [{"delta": {"content": "教材页码未匹配到"}}]}\ndata: [DONE]\n',
+            )
+        ),
+        base_url=settings.base_url,
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks = await _answer_chunks(client, "一个教材没写的问题", "历史")
+
+    assert chunks == ["教材页码未匹配到"]
+
+
+@pytest.mark.asyncio
+async def test_classroom_web_fallback_respects_the_kill_switch(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "off")
+
+    async def fail_web_search(query: str):
+        raise AssertionError("web search must not run when disabled")
+
+    monkeypatch.setattr(DeepSeekClient, "_web_search", fail_web_search)
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content='data: {"choices": [{"delta": {"content": "教材页码未匹配到"}}]}\ndata: [DONE]\n',
+            )
+        ),
+        base_url=settings.base_url,
+    ) as http_client:
+        client = DeepSeekClient(settings, http_client=http_client)
+        chunks = await _answer_chunks(client, "一个教材没写的问题", "历史")
+
+    assert chunks == ["教材页码未匹配到"]
+
+
+@pytest.mark.asyncio
+async def test_defense_web_fallback_runs_only_after_insufficient_verdict(monkeypatch):
+    monkeypatch.setenv("CLASSBOT_WEB_SEARCH", "on")
+    monkeypatch.setenv("CLASSBOT_COURSE", "")
+    from classbot.llm.grounding import GroundedAnswer
+    from classbot.llm.web_search import WebResult
+
+    class _Scenario:
+        name = "测试答辩"
+        kind = "group_meeting"
+
+    class _Index:
+        async def search_async(self, query, limit=5):
+            return []
+
+    calls = {"grounded": 0, "web": 0}
+
+    async def fake_grounded(question, subject, *, prepared):
+        calls["grounded"] += 1
+        return GroundedAnswer("【依据不足】当前资料不足。", "insufficient", ())
+
+    async def fake_web_search(query: str):
+        calls["web"] += 1
+        return (
+            WebResult(
+                title="网络参考",
+                url="https://example.com/ref",
+                snippet="网络摘要",
+            ),
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert "网络检索参考" in payload["messages"][0]["content"]
+        assert "不得把网络内容说成本地资料的事实" in payload["messages"][0]["content"]
+        assert "example.com/ref" in payload["messages"][1]["content"]
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                'data: {"choices": [{"delta": {"content": "本地资料未命中，网络参考要点。"}}]}\n'
+                "data: [DONE]\n"
+            ),
+        )
+
+    settings = _settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.base_url
+    ) as http_client:
+        client = DeepSeekClient(
+            settings,
+            http_client=http_client,
+            scenario=_Scenario(),
+            knowledge_index=_Index(),
+        )
+        monkeypatch.setattr(client, "grounded_answer", fake_grounded)
+        monkeypatch.setattr(client, "_web_search", fake_web_search)
+        from classbot.llm.deepseek_client import PreparedAnswer
+
+        fallback = await client.grounded_answer_with_web_fallback(
+            "未命中问题", "学科", prepared=PreparedAnswer([], ()),
+        )
+        assert calls == {"grounded": 1, "web": 1}
+        assert fallback.status == "web_fallback"
+        assert fallback.text.startswith("【网络检索参考】")
+        assert "网络参考要点" in fallback.text
+
+        async def fake_supported(question, subject, *, prepared):
+            calls["grounded"] += 1
+            return GroundedAnswer("已核验答案", "supported", ())
+
+        monkeypatch.setattr(client, "grounded_answer", fake_supported)
+        supported = await client.grounded_answer_with_web_fallback(
+            "命中问题", "学科", prepared=PreparedAnswer([], ()),
+        )
+        assert calls == {"grounded": 2, "web": 1}
+        assert supported.status == "supported"

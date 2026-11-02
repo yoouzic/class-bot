@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Iterable, Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -13,7 +15,12 @@ _AUDIO_QUEUE_SIZE = 512
 _INPUT_QUEUE_SIZE = _AUDIO_QUEUE_SIZE + 1
 _FINISH = object()
 SAMPLE_RATE = 16_000
+_CHUNK_SAMPLES = 9600
 _LOGGER = logging.getLogger(__name__)
+
+
+class AsrOverloadError(RuntimeError):
+    """Recognition stopped before accepting audio that cannot be buffered intact."""
 
 
 class _EventsEnd:
@@ -23,10 +30,100 @@ class _EventsEnd:
         self.error = error
 
 
+def _cached_model_path(alias: str) -> Path | None:
+    """Resolve installed hub cache without a request; never infer readiness from a directory."""
+    try:
+        from funasr.download.name_maps_from_hub import name_maps_ms
+        from modelscope.hub.snapshot_download import snapshot_download
+
+        model_id = name_maps_ms.get(alias)
+        if not model_id:
+            return None
+        root = Path(snapshot_download(
+            model_id, revision="master", local_files_only=True,
+        )).resolve()
+        configuration = root / "configuration.json"
+        if configuration.stat().st_size > 1024 * 1024:
+            return None
+        metadata = json.loads(configuration.read_text(encoding="utf-8"))
+        if metadata.get("model_name_in_hub", {}).get("ms") != model_id:
+            return None
+        files = metadata.get("file_path_metas")
+        if not isinstance(files, dict) or not all(
+            isinstance(files.get(key), str) and files[key] for key in ("init_param", "config")
+        ):
+            return None
+
+        def paths(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from paths(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    yield from paths(item)
+
+        for relative in paths(files):
+            target = (root / relative).resolve()
+            if (not relative or Path(relative).is_absolute()
+                    or not target.is_relative_to(root) or not target.is_file()
+                    or target.stat().st_size <= 0):
+                return None
+        return root
+    except Exception as error:  # noqa: BLE001 - hub cache misses vary across installed versions.
+        _LOGGER.debug("ASR cache unavailable; retain first-download behavior: %s", error)
+        return None
+
+
+_MODEL_CACHE: dict[str, Any] = {}
+
+
+def clear_model_cache() -> None:
+    """Drop warm models so a later build starts fresh (tests, device change)."""
+    _MODEL_CACHE.clear()
+
+
+def _warm_up_streaming_model(model: Any) -> None:
+    # The first CUDA forward pass compiles kernels (~1.5s); absorbing it into
+    # model build keeps the first live chunk from stalling behind it.
+    generate = getattr(model, "generate", None)
+    if not callable(generate):
+        return
+    try:
+        generate(
+            input=np.zeros(_CHUNK_SAMPLES, dtype=np.float32),
+            cache={},
+            is_final=False,
+            chunk_size=[0, 10, 5],
+            encoder_chunk_look_back=4,
+            decoder_chunk_look_back=1,
+        )
+    except Exception as error:  # noqa: BLE001 - warm-up must never block startup
+        _LOGGER.debug("streaming model warm-up skipped: %s", error)
+
+
 def build_model(device: str) -> Any:
+    warm = _MODEL_CACHE.get(device)
+    if warm is not None:
+        # Model objects hold no session state; generate state lives in the
+        # caller-owned cache dict, so one build serves every session.
+        return warm
     from funasr import AutoModel
 
-    return AutoModel(model="paraformer-zh-streaming", device=device)
+    alias = "paraformer-zh-streaming"
+    cached = _cached_model_path(alias)
+    if cached is not None:
+        # AutoModel still parses every config and loads/validates the actual
+        # checkpoint. A corrupt local load must fail visibly, not swap weights.
+        model = AutoModel(
+            model=str(cached), device=device, disable_update=True, check_latest=False,
+        )
+    else:
+        model = AutoModel(model=alias, device=device, disable_update=True)
+    _warm_up_streaming_model(model)
+    _MODEL_CACHE[device] = model
+    return model
 
 
 class FunAsrStreamingRecognizer:
@@ -37,6 +134,8 @@ class FunAsrStreamingRecognizer:
         hotwords: Iterable[str] = (),
         corrections: Mapping[str, str] | None = None,
         final_refinement: bool = False,
+        refiner: Any | None = None,
+        partial_punctuator: Any | None = None,
     ):
         if chunk_samples <= 0:
             raise ValueError("chunk_samples must be positive")
@@ -52,6 +151,15 @@ class FunAsrStreamingRecognizer:
             if str(wrong).strip() and str(right).strip()
         }
         self.final_refinement = final_refinement
+        # Optional offline refiner (see classbot.asr.offline_refiner). Loaded in
+        # the background once a session starts; unloaded refinements fall back
+        # to the streaming re-decode below.
+        self._refiner = refiner
+        self._refiner_load_task: asyncio.Task[None] | None = None
+        # Optional realtime punctuation for partial events (see
+        # classbot.asr.partial_punctuator); failure degrades to raw partials.
+        self._partial_punctuator = partial_punctuator
+        self._punctuator_load_task: asyncio.Task[None] | None = None
         self._input_queue: asyncio.Queue[bytes | object] = asyncio.Queue(
             _INPUT_QUEUE_SIZE
         )
@@ -126,7 +234,7 @@ class FunAsrStreamingRecognizer:
         self._ensure_running()
 
         if self._input_queue.qsize() >= _AUDIO_QUEUE_SIZE:
-            self._input_queue.get_nowait()
+            self._fail_overload()
         self._input_queue.put_nowait(bytes(frame))
 
     def finish_segment(self) -> None:
@@ -135,8 +243,25 @@ class FunAsrStreamingRecognizer:
         try:
             self._input_queue.put_nowait(_FINISH)
         except asyncio.QueueFull:
-            self._input_queue.get_nowait()
-            self._input_queue.put_nowait(_FINISH)
+            self._fail_overload()
+
+    def _fail_overload(self) -> NoReturn:
+        # Evicting any accepted item can remove either speech or its boundary.
+        # Abort the session instead, and let the runtime stop capture/answers.
+        error = AsrOverloadError(
+            f"音频识别队列积压已达安全上限（{_AUDIO_QUEUE_SIZE} 项，另预留 1 个结束标记）；"
+            "本次识别已停止，请重新开始。",
+        )
+        self._generation += 1
+        self._stopped = True
+        self._worker_error = error
+        if self._worker is not None and not self._worker.done():
+            self._worker.cancel()
+        # In-flight inference is still awaited during cleanup, but its result
+        # and queued partials must not escape from the failed session.
+        self._clear_queue(self._events_queue)
+        self._close_events(error)
+        raise error
 
     def events(self) -> AsyncIterator[TranscriptEvent]:
         return self._event_stream()
@@ -195,6 +320,8 @@ class FunAsrStreamingRecognizer:
 
             self._model = model
             self._worker = asyncio.create_task(self._run_worker(generation))
+            self._begin_refiner_load()
+            self._begin_punctuator_load()
         except asyncio.CancelledError:
             if not load_task.done():
                 load_task.cancel()
@@ -208,6 +335,52 @@ class FunAsrStreamingRecognizer:
         finally:
             if self._start_task is operation:
                 self._start_task = None
+
+    def _begin_refiner_load(self) -> None:
+        if self._refiner is None or not self.final_refinement:
+            return
+        if self._refiner.loaded:
+            return
+        task = self._refiner_load_task
+        if task is not None and not task.done():
+            return
+        self._refiner_load_task = asyncio.create_task(
+            asyncio.to_thread(self._refiner.load)
+        )
+        self._refiner_load_task.add_done_callback(self._consume_refiner_load)
+
+    def _consume_refiner_load(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                _LOGGER.warning(
+                    "offline refiner load failed; segments fall back to "
+                    "streaming refinement: %s",
+                    error,
+                )
+
+    def _begin_punctuator_load(self) -> None:
+        if self._partial_punctuator is None or self._partial_punctuator.loaded:
+            return
+        task = self._punctuator_load_task
+        if task is not None and not task.done():
+            return
+        self._punctuator_load_task = asyncio.create_task(
+            asyncio.to_thread(self._partial_punctuator.load)
+        )
+        self._punctuator_load_task.add_done_callback(
+            self._consume_punctuator_load
+        )
+
+    def _consume_punctuator_load(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                _LOGGER.warning(
+                    "partial punctuator load failed; partials stay "
+                    "unpunctuated: %s",
+                    error,
+                )
 
     def _ensure_running(self) -> None:
         if self._worker is None or self._stopped:
@@ -240,6 +413,19 @@ class FunAsrStreamingRecognizer:
             except Exception as error:  # noqa: BLE001 - cleanup must continue
                 if self._worker_error is None:
                     self._worker_error = error
+
+        refiner_task = self._refiner_load_task
+        self._refiner_load_task = None
+        punctuator_task = self._punctuator_load_task
+        self._punctuator_load_task = None
+        for background_task in (refiner_task, punctuator_task):
+            if background_task is None:
+                continue
+            # Like a pending model load, the background thread cannot be
+            # interrupted; abandoning it keeps stop() responsive.
+            if not background_task.done():
+                background_task.cancel()
+            await asyncio.gather(background_task, return_exceptions=True)
 
         await self._wait_for_inference_tasks()
 
@@ -279,7 +465,8 @@ class FunAsrStreamingRecognizer:
         if samples.size == 0:
             return
 
-        self._segment_audio.append(samples)
+        if self.final_refinement:
+            self._segment_audio.append(samples)
 
         if self._residual.size:
             self._residual = np.concatenate((self._residual, samples))
@@ -362,9 +549,27 @@ class FunAsrStreamingRecognizer:
             )
             self._last_text = self._segment_text
             if emit:
-                self._emit_event(self._segment_text, is_final=is_final)
+                self._emit_event(
+                    await self._partial_event_text(self._segment_text, is_final),
+                    is_final=is_final,
+                )
             emitted = True
         return emitted
+
+    async def _partial_event_text(self, text: str, is_final: bool) -> str:
+        punctuator = self._partial_punctuator
+        if is_final or punctuator is None or not punctuator.loaded:
+            return text
+        try:
+            punctuated = await asyncio.shield(
+                asyncio.to_thread(punctuator.punctuate, text)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - punctuation is best effort
+            _LOGGER.debug("partial punctuation failed: %s", error)
+            return text
+        return punctuated or text
 
     async def _refine_segment(self) -> str:
         if self._model is None or len(self._segment_audio) < 2:
@@ -374,6 +579,28 @@ class FunAsrStreamingRecognizer:
         if samples.size < self.chunk_samples * 2:
             return ""
 
+        if self._refiner is not None and self._refiner.loaded:
+            refined = await self._refine_with_offline_model(samples)
+            if refined is not None:
+                return refined
+        return await self._refine_with_streaming_model(samples)
+
+    async def _refine_with_offline_model(self, samples: np.ndarray) -> str | None:
+        try:
+            refined = await asyncio.shield(
+                asyncio.to_thread(self._refiner.refine, samples)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - refinement is best effort
+            _LOGGER.warning(
+                "offline ASR refinement failed; use streaming refinement: %s",
+                error,
+            )
+            return None
+        return self._apply_corrections(refined)
+
+    async def _refine_with_streaming_model(self, samples: np.ndarray) -> str:
         inference_task = asyncio.create_task(
             asyncio.to_thread(
                 self._model.generate,

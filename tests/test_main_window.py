@@ -4,9 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
 from classbot.domain import AnswerCard, CardStatus
+from classbot.ui import capture_affinity
 from classbot.ui.main_window import MainWindow
 
 
@@ -52,8 +53,8 @@ def test_window_starts_with_classroom_floating_state(window):
     assert "历史" in window.windowTitle()
     assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert window.windowFlags() & Qt.WindowType.Tool
-    assert window.size().width() == 420
-    assert window.size().height() == 560
+    assert window.size().width() == 560
+    assert window.size().height() == 750
     assert window.status_label.text() == "已停止"
     assert window.transcript_label.text() == "等待转写…"
     assert window.current_question_label.text() == "当前问题：等待识别…"
@@ -193,6 +194,43 @@ def test_update_answer_replaces_placeholder_with_complete_answer(window):
     assert "状态：answering" in rendered
 
 
+def test_card_separates_question_and_answer_visual_sections(window):
+    window.upsert_card(
+        make_card(
+            answer="德国人。",
+            status=CardStatus.ANSWERED,
+            timestamp_ms=1_000,
+        )
+    )
+
+    item = window.cards_list.item(0)
+    card_widget = window.cards_list.itemWidget(item)
+
+    assert isinstance(card_widget, QFrame)
+    assert card_widget.objectName() == "answerCard"
+    assert card_widget.findChild(QFrame, "questionSection") is not None
+    assert card_widget.findChild(QFrame, "answerSection") is not None
+    assert card_widget.findChild(QLabel, "questionTextLabel").text() == (
+        "马克思出生于哪一年？"
+    )
+    assert card_widget.findChild(QLabel, "answerTextLabel").text() == "德国人。"
+    assert "#8ecbff" in card_widget.styleSheet()
+    assert "#8be3ae" in card_widget.styleSheet()
+
+
+def test_card_visual_sections_update_without_replacing_the_widget(window):
+    window.upsert_card(make_card(status=CardStatus.ANSWERING))
+    item = window.cards_list.item(0)
+    original_widget = window.cards_list.itemWidget(item)
+
+    window.update_answer("q1", "马克思出生于1818年。")
+
+    assert window.cards_list.itemWidget(item) is original_widget
+    assert original_widget.findChild(QLabel, "answerTextLabel").text() == (
+        "马克思出生于1818年。"
+    )
+
+
 def test_update_answer_ignores_unknown_question_id(window):
     window.update_answer("missing", "不会显示")
 
@@ -267,6 +305,32 @@ def test_current_question_label_tracks_newest_card_and_card_shows_timestamp(wind
     )
 
 
+def test_new_question_scrolls_to_latest_card(window, qapp):
+    window.show()
+
+    for index in range(40):
+        window.upsert_card(
+            make_card(
+                question_id=f"q{index}",
+                question=f"问题 {index}",
+            )
+        )
+
+    qapp.processEvents()
+    scrollbar = window.cards_list.verticalScrollBar()
+    scrollbar.setValue(scrollbar.minimum())
+    qapp.processEvents()
+
+    window.upsert_card(make_card(question_id="q40", question="最新问题 40"))
+    qapp.processEvents()
+
+    latest_item = window.cards_list.item(40)
+    assert scrollbar.value() == scrollbar.maximum()
+    assert window.cards_list.visualItemRect(latest_item).intersects(
+        window.cards_list.viewport().rect()
+    )
+
+
 def test_close_emits_close_requested(window):
     close_events = []
     window.close_requested.connect(lambda: close_events.append(True))
@@ -274,6 +338,11 @@ def test_close_emits_close_requested(window):
     window.close()
 
     assert close_events == [True]
+
+
+def test_cancelled_candidate_does_not_display_waiting_for_answer(window):
+    window.upsert_card(make_card(status=CardStatus.CANCELLED))
+    assert "已取消回答" in window.cards_list.item(0).text()
 
 
 def test_card_limit_evicts_oldest_new_card_but_not_existing_upsert(window):
@@ -304,3 +373,128 @@ def test_card_limit_evicts_oldest_new_card_but_not_existing_upsert(window):
     assert "q128" in window._cards
     assert "问题 1" in window.cards_list.item(0).text()
     assert "问题 128" in window.cards_list.item(127).text()
+
+
+def _patch_capture(
+    monkeypatch,
+    *,
+    supported: bool = True,
+    apply_result: bool = True,
+    calls: list[tuple[int, bool]] | None = None,
+):
+    monkeypatch.setattr(capture_affinity, "is_supported", lambda: supported)
+    record = calls if calls is not None else []
+
+    def fake_set_capture_visible(hwnd: int, *, visible: bool) -> bool:
+        record.append((hwnd, visible))
+        return apply_result
+
+    monkeypatch.setattr(capture_affinity, "set_capture_visible", fake_set_capture_visible)
+    return record
+
+
+def test_capture_hiding_on_by_default_when_supported(monkeypatch):
+    _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        assert checkbox.text() == "对屏幕共享隐藏"
+        assert checkbox.isEnabled()
+        assert checkbox.isChecked()
+    finally:
+        window.close()
+
+
+def test_capture_hiding_unavailable_on_unsupported_platform(monkeypatch):
+    _patch_capture(monkeypatch, supported=False)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        assert not checkbox.isEnabled()
+        assert not checkbox.isChecked()
+    finally:
+        window.close()
+
+
+def test_showing_window_excludes_it_from_capture(monkeypatch):
+    calls = _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        window.show()
+    finally:
+        window.close()
+
+    assert len(calls) == 1
+    hwnd, visible = calls[0]
+    assert isinstance(hwnd, int)
+    assert visible is False
+
+
+def test_unsupported_window_never_touches_capture_api(monkeypatch):
+    calls = _patch_capture(monkeypatch, supported=False)
+    window = MainWindow("历史")
+    try:
+        window.show()
+        window.capture_hidden_checkbox.setChecked(True)
+    finally:
+        window.close()
+
+    assert calls == []
+
+
+def test_capture_hiding_toggle_switches_affinity(monkeypatch):
+    calls = _patch_capture(monkeypatch)
+    window = MainWindow("历史")
+    try:
+        checkbox = window.capture_hidden_checkbox
+        checkbox.setChecked(False)
+        checkbox.setChecked(True)
+    finally:
+        window.close()
+
+    assert [visible for _, visible in calls] == [True, False]
+
+
+def test_capture_hiding_failure_reverts_and_disables_checkbox(monkeypatch):
+    _patch_capture(monkeypatch, apply_result=False)
+    window = MainWindow("历史")
+    try:
+        window.show()
+        checkbox = window.capture_hidden_checkbox
+
+        assert not checkbox.isChecked()
+        assert not checkbox.isEnabled()
+        assert not checkbox.toolTip().endswith("系统支持。")
+
+        checkbox.setEnabled(True)
+        checkbox.setChecked(True)
+
+        assert not checkbox.isChecked()
+        assert not checkbox.isEnabled()
+    finally:
+        window.close()
+
+
+def test_capture_hiding_failure_after_prior_apply_restores_checked(monkeypatch):
+    outcomes = iter([True, False])
+    monkeypatch.setattr(capture_affinity, "is_supported", lambda: True)
+
+    def flaky_set_capture_visible(hwnd: int, *, visible: bool) -> bool:
+        return next(outcomes)
+
+    monkeypatch.setattr(
+        capture_affinity, "set_capture_visible", flaky_set_capture_visible
+    )
+    window = MainWindow("历史")
+    try:
+        window.show()
+        checkbox = window.capture_hidden_checkbox
+        assert checkbox.isChecked()
+        assert checkbox.isEnabled()
+
+        checkbox.setChecked(False)
+
+        assert checkbox.isChecked()
+        assert not checkbox.isEnabled()
+    finally:
+        window.close()

@@ -31,7 +31,7 @@ if ($EnvText -notmatch '(?m)^\s*DEEPSEEK_API_KEY\s*=\s*\S+') {
 $OldPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = Join-Path $ProjectRoot "src"
 try {
-    & $PythonPath -c "import classbot, funasr, torch, torchaudio"
+    & $PythonPath -c "import classbot, funasr, torch, torchaudio, pyaudiowpatch, soxr, docx, pptx, pypdf, transformers"
     if ($LASTEXITCODE -ne 0) {
         Stop-Launcher "ASR dependencies are unavailable. Run: .venv\Scripts\python.exe -m pip install -e `".[asr]`""
     }
@@ -42,13 +42,13 @@ catch {
 
 if ($CheckOnly) {
     $env:PYTHONPATH = $OldPythonPath
-    Write-Host "[Classbot] Check passed. The microphone launcher is ready." -ForegroundColor Green
+    Write-Host "[Classbot] Check passed. The online defense assistant is ready." -ForegroundColor Green
     exit 0
 }
 
 Push-Location $ProjectRoot
 try {
-    Write-Host "[Classbot] Starting microphone listener. Close the window to stop." -ForegroundColor Green
+    Write-Host "[Classbot] Starting online defense assistant. Select a scenario and playback device in the window." -ForegroundColor Green
     & $PythonPath -m classbot
     $ExitCode = $LASTEXITCODE
 }

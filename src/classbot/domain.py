@@ -34,6 +34,7 @@ class QuestionCandidate:
     subject: str
     confidence: float
     is_final: bool
+    context: str = ""
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():
@@ -53,6 +54,8 @@ class AnswerCard:
     status: CardStatus = CardStatus.DETECTED
     error: str | None = None
     timestamp_ms: int = 0
+    scenario_name: str = ""
+    sources: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.question_id.strip():

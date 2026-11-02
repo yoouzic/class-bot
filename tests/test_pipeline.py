@@ -77,6 +77,7 @@ def candidate(
     *,
     is_final: bool = True,
     subject: str = "历史",
+    context: str = "",
 ) -> QuestionCandidate:
     return QuestionCandidate(
         question_id=question_id,
@@ -84,6 +85,7 @@ def candidate(
         subject=subject,
         confidence=0.9,
         is_final=is_final,
+        context=context,
     )
 
 
@@ -93,6 +95,154 @@ def event(text: str, *, is_final: bool = True) -> TranscriptEvent:
 
 def card_snapshot(card: AnswerCard) -> tuple[str, str, str, CardStatus, str | None]:
     return (card.question_id, card.question, card.answer, card.status, card.error)
+
+
+@pytest.mark.asyncio
+async def test_live_revisions_wait_for_stability_before_one_request():
+    texts = ["认识的过程是什么", "认识的过程是什么呢", "认识的过程有哪些呢"]
+
+    class LiveRecognizer(FakeRecognizer):
+        async def events(self):
+            for text in texts:
+                yield event(text, is_final=False)
+                await asyncio.sleep(0.02)
+            yield event(texts[-1] + "？")
+
+    detector = FakeDetector({
+        text: [candidate("live", text, is_final=False)] for text in texts
+    } | {texts[-1] + "？": [candidate("live", texts[-1] + "？")]})
+    client = FakeClient({text: ["两次飞跃"] for text in [*texts, texts[-1] + "？"]})
+    pipeline = LivePipeline(LiveRecognizer([]), detector, client, lambda _: None, lambda *_: None)
+    await pipeline.run()
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == texts[-1] + "？"
+
+
+@pytest.mark.asyncio
+async def test_rejected_final_transcript_cancels_pending_candidate():
+    from classbot.question_detector import QuestionDetector
+
+    recognizer = FakeRecognizer([
+        TranscriptEvent(text="认识的过程是什么", is_final=False, segment_id=7),
+        TranscriptEvent(text="认识的过程是实践认识再实践再认识", is_final=True, segment_id=7),
+    ])
+    client = FakeClient({"认识的过程是什么": ["不应该调用"]})
+    updates = []
+    pipeline = LivePipeline(recognizer, QuestionDetector("马克思主义基本原理"), client,
+                            lambda card: updates.append(card_snapshot(card)), lambda *_: None)
+    await pipeline.run()
+    assert client.calls == []
+    assert updates[-1][3] is CardStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_final_filler_does_not_restart_completed_answer():
+    first = event("认识的过程是什么", is_final=False)
+    final = event("认识的过程是什么呢")
+    client = FakeClient({first.text: ["两次飞跃"], final.text: ["多余回答"]})
+    answered = asyncio.Event()
+
+    class StableRecognizer(FakeRecognizer):
+        async def events(self):
+            yield first
+            await answered.wait()
+            yield final
+
+    def on_card(card):
+        if card.status is CardStatus.ANSWERED:
+            answered.set()
+
+    pipeline = LivePipeline(StableRecognizer([]), FakeDetector({
+        first.text: [candidate("live", first.text, is_final=False)],
+        final.text: [candidate("live", final.text)],
+    }), client, on_card, lambda *_: None)
+    await pipeline.run()
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_minor_context_revision_on_final_does_not_restart_answer():
+    first = event("认识的过程是什么", is_final=False)
+    final = event("认识的过程是什么呢")
+    answered = asyncio.Event()
+
+    class ContextRecognizer(FakeRecognizer):
+        async def events(self):
+            yield first
+            await answered.wait()
+            yield final
+
+    class ContextClient:
+        def __init__(self):
+            self.calls = []
+
+        async def stream_answer(self, question, subject):
+            self.calls.append((question, subject))
+            yield "两次飞跃"
+
+    client = ContextClient()
+    def on_card(card):
+        if card.status is CardStatus.ANSWERED:
+            answered.set()
+
+    detector = FakeDetector({
+        first.text: [candidate("live", first.text, is_final=False, context="我们来探讨认识的过程")],
+        final.text: [candidate("live", final.text, context="我们来探讨这个认识的过程")],
+    })
+    pipeline = LivePipeline(ContextRecognizer([]), detector, client, on_card, lambda *_: None)
+    await pipeline.run()
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_stopping_during_stability_wait_never_calls_api():
+    pending_seen = asyncio.Event()
+
+    class WaitingRecognizer(FakeRecognizer):
+        async def events(self):
+            yield event("认识的过程是什么", is_final=False)
+            pending_seen.set()
+            await self.stopped.wait()
+
+    client = FakeClient({"认识的过程是什么": ["多余回答"]})
+    pipeline = LivePipeline(WaitingRecognizer([]), FakeDetector({
+        "认识的过程是什么": [candidate("live", "认识的过程是什么", is_final=False)]
+    }), client, lambda _: None, lambda *_: None)
+    task = asyncio.create_task(pipeline.run())
+    await pending_seen.wait()
+    await pipeline.stop()
+    await task
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_rejected_final_cancels_running_answer_and_clears_wrong_text():
+    from classbot.question_detector import QuestionDetector
+    delta_seen = asyncio.Event()
+    cancelled = asyncio.Event()
+    cards = []
+
+    class RunningRecognizer(FakeRecognizer):
+        async def events(self):
+            yield TranscriptEvent(text="认识的过程是什么", is_final=False, segment_id=7)
+            await delta_seen.wait()
+            yield TranscriptEvent(text="认识是实践的结果", is_final=True, segment_id=7)
+
+    class RunningClient:
+        async def stream_answer(self, *_):
+            try:
+                yield "未确认的回答"
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    pipeline = LivePipeline(RunningRecognizer([]), QuestionDetector("马克思主义基本原理"),
+                            RunningClient(), lambda card: cards.append(card_snapshot(card)),
+                            lambda *_: delta_seen.set())
+    await pipeline.run()
+    assert cancelled.is_set()
+    assert cards[-1][2] == ""
+    assert cards[-1][3] is CardStatus.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -194,6 +344,37 @@ async def test_final_question_streams_one_answer_card_to_answered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_context_is_sent_to_answer_model_but_not_card_text() -> None:
+    transcript = event("触发回答")
+    question = candidate(
+        "q1",
+        "唯心主义又分为两种分别是什么",
+        context="上一节课学习了唯物主义和唯心主义",
+    )
+    prompt = (
+        "背景信息：上一节课学习了唯物主义和唯心主义\n"
+        "问题：唯心主义又分为两种分别是什么"
+    )
+    detector = FakeDetector({transcript.text: [question]})
+    client = FakeClient({prompt: ["唯心主义分为主观唯心主义和客观唯心主义。"]})
+    cards: list[tuple[str, str, CardStatus]] = []
+
+    pipeline = LivePipeline(
+        FakeRecognizer([transcript]),
+        detector,
+        client,
+        lambda card: cards.append((card.question, card.answer, card.status)),
+        lambda _question_id, _answer: None,
+    )
+
+    await pipeline.run()
+
+    assert client.calls == [(prompt, "历史")]
+    assert cards[-1][0] == question.text
+    assert cards[-1][1].startswith("唯心主义分为")
+
+
+@pytest.mark.asyncio
 async def test_new_question_card_records_session_elapsed_timestamp() -> None:
     transcript = event("马克思出生于哪一年？")
     question = candidate("q1", transcript.text)
@@ -229,7 +410,7 @@ async def test_partial_then_same_final_text_uses_one_card_and_one_request() -> N
             final.text: [final_question],
         }
     )
-    client = FakeClient({partial_question.text: ["欧洲历史上的思想文化运动"]})
+    client = FakeClient({final_question.text: ["欧洲历史上的思想文化运动"]})
     card_updates: list[tuple[str, str, str, CardStatus, str | None]] = []
 
     pipeline = LivePipeline(

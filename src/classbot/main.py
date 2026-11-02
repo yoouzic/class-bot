@@ -12,6 +12,8 @@ from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 
 from classbot.asr.funasr_streaming import FunAsrStreamingRecognizer
+from classbot.asr.offline_refiner import OfflineRefiner
+from classbot.asr.partial_punctuator import PartialPunctuator
 from classbot.audio.capture import AudioCapture, AudioCaptureError
 from classbot.audio.segmenter import SpeechSegmenter
 from classbot.config import Settings
@@ -28,11 +30,26 @@ Factory = Callable[..., Any]
 
 def _make_recognizer(device: str) -> FunAsrStreamingRecognizer:
     profile = load_course_profile(os.getenv("CLASSBOT_COURSE", ""))
+    final_refinement = os.getenv(
+        "CLASSBOT_FINAL_REFINEMENT", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    refiner: OfflineRefiner | None = None
+    if final_refinement and os.getenv(
+        "CLASSBOT_ASR_REFINER", "seaco"
+    ).strip().lower() not in {"0", "false", "no", "off", "stream", "disabled"}:
+        refiner = OfflineRefiner(device=device, hotwords=profile.hotwords)
+    partial_punctuator: PartialPunctuator | None = None
+    if os.getenv(
+        "CLASSBOT_ASR_PARTIAL_PUNC", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}:
+        partial_punctuator = PartialPunctuator(device=device)
     return FunAsrStreamingRecognizer(
         device=device,
         hotwords=profile.hotwords,
         corrections=profile.corrections,
-        final_refinement=False,
+        final_refinement=final_refinement,
+        refiner=refiner,
+        partial_punctuator=partial_punctuator,
     )
 
 
@@ -122,6 +139,8 @@ class RuntimeController:
         self._application_quitting = False
         self._application: Any | None = None
         self._signal_tasks: set[asyncio.Task[Any]] = set()
+        self.prepare_session: Callable[[], Any] | None = None
+        self.shutdown_resources: Callable[[], Any] | None = None
 
     @property
     def current_runtime(self) -> Runtime | None:
@@ -187,6 +206,8 @@ class RuntimeController:
         runtime: Runtime | None = None
         owner_task = asyncio.current_task()
         try:
+            if self.prepare_session is not None:
+                await self._maybe_await(self.prepare_session())
             parts["capture"] = await self._make(
                 self.dependencies.capture_factory
             )
@@ -245,7 +266,7 @@ class RuntimeController:
             return runtime
         except BaseException as error:
             status = (
-                "mic_error"
+                ("audio_error" if self.settings.audio_source == "loopback" else "mic_error")
                 if isinstance(error, AudioCaptureError)
                 else "asr_error"
             )
@@ -339,6 +360,7 @@ class RuntimeController:
                     )
             await self.stop()
         finally:
+            await self._safe_call(self, "shutdown_resources")
             async with self._lifecycle_lock:
                 self._shutdown_complete = True
             await self._quit()
@@ -429,8 +451,9 @@ class RuntimeController:
                 if event.speech_started:
                     in_speech = True
                     runtime.detector.begin_segment()
-                    for buffered_frame in tuple(pre_roll)[:-1]:
-                        runtime.recognizer.push_audio(buffered_frame)
+                    if not getattr(event, "continued", False):
+                        for buffered_frame in tuple(pre_roll)[:-1]:
+                            runtime.recognizer.push_audio(buffered_frame)
                 if in_speech:
                     runtime.recognizer.push_audio(frame)
                 if event.speech_ended:
@@ -439,10 +462,12 @@ class RuntimeController:
         except asyncio.CancelledError:
             raise
         except AudioCaptureError:
-            _LOGGER.exception("microphone runtime failed")
+            _LOGGER.exception("audio capture runtime failed")
             if not runtime.cleanup_started:
                 await asyncio.shield(
-                    self._cleanup_runtime(runtime, status="mic_error")
+                    self._cleanup_runtime(runtime, status=(
+                        "audio_error" if self.settings.audio_source == "loopback" else "mic_error"
+                    ))
                 )
         except Exception:
             _LOGGER.exception("audio runtime failed")
@@ -647,8 +672,15 @@ def main() -> None:
     asyncio.set_event_loop(loop)
     window = MainWindow(settings.subject)
     controller = RuntimeController(settings, window)
+    from classbot.workspace import WorkspaceController
+
+    workspace = WorkspaceController(settings, window, controller)
+    workspace.initialize()
+
+    controller.shutdown_resources = workspace.aclose
     controller.connect_signals(application)
     window.show()
+    loop.create_task(workspace.refresh_devices())
 
     with loop:
         loop.run_forever()
